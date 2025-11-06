@@ -1,61 +1,56 @@
 // src/App.jsx
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/* ======= Assets (green packet = logos) ======= */
-import Logo1   from "./assets/img/logo1.png";
-import Logo2   from "./assets/img/logo2.png";
-import Logo3   from "./assets/img/logo3.png";
-import Logo4   from "./assets/img/logo4.png";
-import Stoney1 from "./assets/img/stoney1.png";
-import Stoney2 from "./assets/img/stoney2.png";
-import Stoney3 from "./assets/img/stoney3.png";
-
 /* ============================== Config =============================== */
 // Flow
-const COUNTDOWN_MS        = 3_000;
+const COUNTDOWN_MS        = 3_000;       // 3-2-1 overlay
 
 // Gameplay (endless)
-const LANES               = 5;
+const LANES               = 5;           // exactly five fixed lanes
 const PKT_SIZE_DESKTOP    = 66;
 const PKT_SIZE_MOBILE     = 58;
 
-const VALID_CHANCE        = 0.40;  // 40% logos, 60% red
-const SCORE_PER_HIT       = 10;
-const SCORE_GREEN_MISS    = -5;
+const VALID_CHANCE        = 0.40;        // 40% logos (valid), 60% red squares (invalid)
+const SCORE_PER_HIT       = 10;          // +10 per verified logo
+const SCORE_GREEN_MISS    = -5;          // -5 if a logo touches the floor
 
-// Difficulty ramp
-const BASE_SPEED_PX_S     = 260;
-const SPEED_RAMP_PER_MIN  = 0.55;
-const SPAWN_BASE_MS       = 520;
-const SPAWN_MIN_MS        = 120;
-const SPAWN_ACCEL_PER_MIN = 300;
+// Difficulty ramp (speeds & spawn rate increase over time)
+const BASE_SPEED_PX_S     = 260;         // starting fall speed (px/sec)
+const SPEED_RAMP_PER_MIN  = 0.55;        // +55% speed every minute
+const SPAWN_BASE_MS       = 520;         // initial spawn interval
+const SPAWN_MIN_MS        = 120;         // minimum (fastest) spawn interval
+const SPAWN_ACCEL_PER_MIN = 300;         // reduce interval by this / minute
 
-/* Floor geometry (must match Tailwind classes on the red line) */
-const FLOOR_PAD_PX        = 12;   // bottom-3
-const FLOOR_HEIGHT_PX     = 8;    // h-2
+// Prevent visible overlaps in the same lane (vertical spacing)
+const SAME_LANE_MIN_GAP   = 0.95;        // *pktSize* multiplier (0.95 == a hair of spacing)
 
-/* Backend URL */
+/* Backend URL that works on both phone & PC in the same LAN */
 const HOST     = typeof window !== "undefined" ? window.location.hostname : "localhost";
 const BACKEND  = (import.meta.env.VITE_API || `http://${HOST}:8787`).replace(/\/+$/, "");
+
+/* ============================== Assets (logos) =============================== */
+/** Collect the logo image URLs Vite will serve (you already placed them in /src/assets/img) */
+const LOGO_SRCS = Object.values(
+  import.meta.glob("./assets/img/logo*.png", { eager: true, as: "url" })
+);
+
+/** Decode logos before gameplay so they render with zero flicker */
+async function preloadLogos() {
+  await Promise.all(
+    LOGO_SRCS.map((src) => {
+      const img = new Image();
+      img.decoding = "async";
+      img.loading = "eager";
+      img.src = src;
+      return img.decode().catch(() => {});
+    })
+  );
+}
 
 /* ============================== Helpers ============================== */
 const now   = () => performance.now();
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const isMob = () => window.innerWidth < 640;
-
-/* Green sprite set (logos) with per-sprite scale (Stoney slightly larger) */
-const GREEN_SPRITES = [
-  { src: Logo1,   scale: 1.00 },
-  { src: Logo2,   scale: 1.00 },
-  { src: Logo3,   scale: 1.00 },
-  { src: Logo4,   scale: 1.00 },
-  { src: Stoney1, scale: 1.22 },
-  { src: Stoney2, scale: 1.22 },
-  { src: Stoney3, scale: 1.22 },
-];
-
-/* Actual draw size of a packet (accounts for logo scale) */
-const drawSize = (p) => (p.valid && p.img ? p.size * (p.scale ?? 1) : p.size);
 
 /* ============================== App ================================= */
 export default function App() {
@@ -63,6 +58,10 @@ export default function App() {
   const [player, setPlayer] = useState("");
   const [score, setScore] = useState(0);
   const scoreRef = useRef(0);
+
+  // preload gate
+  const [assetsReady, setAssetsReady] = useState(false);
+  const [pendingStart, setPendingStart] = useState(false);
 
   /* -------- Leaderboard -------- */
   const [leaderboard, setLeaderboard] = useState([]);
@@ -86,7 +85,7 @@ export default function App() {
     const vh = window.innerHeight || 800;
     const headerH = headerRef.current?.offsetHeight ?? 0;
     const hudH    = hudRef.current?.offsetHeight ?? 0;
-    const margins = 32 + 20 + 16;
+    const margins = 32 /* top */ + 20 /* board↔HUD */ + 16 /* bottom */;
     const available = vh - headerH - hudH - margins;
     setBoardHeight(clamp(available, 360, 640));
   }, []);
@@ -126,7 +125,7 @@ export default function App() {
 
   /* -------- Packets + loop state -------- */
   const [packets, setPackets] = useState([]);
-  const stateRef = useRef({ packets: [], startedAt: 0 });
+  const stateRef = useRef({ packets: [], startedAt: 0, lastLaneOf: {} }); // last y per lane (for gaps)
   const rafRef = useRef(0);
   const runningRef = useRef(false);
   const lastSpawnRef = useRef(0);
@@ -134,6 +133,7 @@ export default function App() {
   const resetRound = useCallback(() => {
     setScore(0); scoreRef.current = 0;
     stateRef.current.packets = [];
+    stateRef.current.lastLaneOf = {};
     setPackets([]);
   }, []);
 
@@ -149,53 +149,37 @@ export default function App() {
     return clamp(interval, SPAWN_MIN_MS, SPAWN_BASE_MS);
   }, []);
 
-  // Prevent stacking: require a minimum gap in the selected lane
-  const laneSafeToSpawn = useCallback((laneIdx) => {
-    const arr = stateRef.current.packets;
-    const SPAWN_Y = 10;
-    const MIN_GAP = pktSize * 1.25; // vertical safety
-    let nearestY = Infinity;
-
-    for (let i = 0; i < arr.length; i++) {
-      const p = arr[i];
-      if (p.lane !== laneIdx) continue;
-      if (p.y < nearestY) nearestY = p.y;
-    }
-    if (nearestY === Infinity) return true;
-    return nearestY >= (SPAWN_Y + pktSize + (MIN_GAP - pktSize));
-  }, [pktSize]);
-
   const spawnPacket = useCallback(() => {
     const { h, lanesX } = boardSize;
     if (lanesX.length === 0 || h <= 0) return;
 
-    const candidates = [];
-    for (let i = 0; i < lanesX.length; i++) {
-      if (laneSafeToSpawn(i)) candidates.push(i);
-    }
-    if (candidates.length === 0) return;
+    // pick a lane; if the last packet in that lane is too close, retry a different lane once
+    let lane = Math.floor(Math.random() * lanesX.length);
+    const tryAlt = () => Math.floor(Math.random() * lanesX.length);
 
-    const lane = candidates[Math.floor(Math.random() * candidates.length)];
+    const minGap = pktSize * SAME_LANE_MIN_GAP;
+    const lastY = stateRef.current.lastLaneOf[lane];
+    if (lastY !== undefined && lastY < minGap * 1.1) {
+      const alt = tryAlt();
+      if (alt !== lane) lane = alt;
+    }
+
     const x = lanesX[lane];
-    const y = 10;
+    const y = 10; // spawn inside container
+    const vy = currentSpeed() / 60; // px / frame (~60fps)
 
-    const isValid = Math.random() < VALID_CHANCE;
-    let img = null, scale = 1;
-    if (isValid) {
-      const pick = GREEN_SPRITES[Math.floor(Math.random() * GREEN_SPRITES.length)];
-      img = pick.src;
-      scale = pick.scale ?? 1;
-    }
+    const valid = Math.random() < VALID_CHANCE;
+    const logoSrc = valid ? LOGO_SRCS[Math.floor(Math.random() * LOGO_SRCS.length)] : null;
 
     stateRef.current.packets.push({
       id: Math.random().toString(36).slice(2),
       lane,
-      x, y, size: pktSize,
-      valid: isValid,
-      img,
-      scale,
+      x, y, size: pktSize, vy, valid, logoSrc,
     });
-  }, [boardSize, pktSize, laneSafeToSpawn]);
+
+    // update "last in lane" to top of board (distance from previous spawn)
+    stateRef.current.lastLaneOf[lane] = 0;
+  }, [boardSize, pktSize, currentSpeed]);
 
   const endGame = useCallback(async (reason = "clicked_red") => {
     runningRef.current = false;
@@ -211,7 +195,7 @@ export default function App() {
       }
       await fetchBoard();
     } catch {}
-    setView("gameover");
+    setView("gameover");  // do not auto-open leaderboard
   }, [player, fetchBoard]);
 
   /* -------- Main loop (endless) -------- */
@@ -219,49 +203,66 @@ export default function App() {
     if (!runningRef.current) return;
     const t = now();
 
-    // Spawn pacing
+    // dynamic spawn rate
     const needInterval = currentSpawnInterval();
     if (t - lastSpawnRef.current >= needInterval) {
       spawnPacket();
       lastSpawnRef.current = t;
     }
 
-    // Move all by the same step (no catching-up)
-    const step = currentSpeed() / 60;
-    const floorTop = boardSize.h - FLOOR_PAD_PX - FLOOR_HEIGHT_PX; // top edge of red bar
+    // integrate with strict floor clamp (no visual crossing)
+    const floorY = boardSize.h - 8;                 // visual red line top
+    const clampY = floorY - 1;                      // extra 1px safety
     const arr = stateRef.current.packets;
 
     for (let i = arr.length - 1; i >= 0; i--) {
       const p = arr[i];
-      const sizeH = drawSize(p);           // <-- real drawn height
-      const nextY = p.y + step;
-      const wouldBottom = nextY + sizeH;
 
-      // Remove exactly when touching the top of the red line — no visual crossing
-      if (wouldBottom >= floorTop) {
+      // advance
+      let nextY = p.y + p.vy;
+
+      // update lane gap tracker (distance since spawn)
+      stateRef.current.lastLaneOf[p.lane] = nextY;
+
+      // Hard stop at the floor so packets never render past the red bar
+      if (nextY + p.size >= clampY) {
+        p.y = clampY - p.size; // place exactly on top of the line
         if (p.valid) {
           scoreRef.current += SCORE_GREEN_MISS;
           setScore(s => s + SCORE_GREEN_MISS);
         }
+        // remove packet immediately (won't be seen below the floor)
         arr.splice(i, 1);
-      } else {
-        p.y = nextY;
+        continue;
       }
+
+      p.y = nextY;
     }
 
     setPackets([...arr]);
     rafRef.current = requestAnimationFrame(tick);
-  }, [boardSize.h, currentSpeed, currentSpawnInterval, spawnPacket]);
+  }, [boardSize.h, spawnPacket, currentSpawnInterval]);
 
   const startGame = useCallback(() => {
     resetRound();
     stateRef.current.startedAt = now();
+    stateRef.current.lastLaneOf = {};
     lastSpawnRef.current = 0;
     runningRef.current = true;
     setView("game");
+
+    // seed a few packets so it starts active
     for (let i = 0; i < 4; i++) spawnPacket();
+
     rafRef.current = requestAnimationFrame(tick);
   }, [resetRound, spawnPacket, tick]);
+
+  /* -------- Preload logos on mount -------- */
+  useEffect(() => {
+    let alive = true;
+    preloadLogos().then(() => alive && setAssetsReady(true));
+    return () => { alive = false; };
+  }, []);
 
   /* -------- Name flow -------- */
   const [nameInput, setNameInput] = useState("");
@@ -271,8 +272,17 @@ export default function App() {
     if (!n) return;
     setPlayer(n.slice(0, 20));
     setView("countdown");
-    setTimeout(startGame, COUNTDOWN_MS);
+    // after the visual 3-2-1, mark that we're ready to start
+    setTimeout(() => setPendingStart(true), COUNTDOWN_MS);
   };
+
+  // Start only when countdown finished AND assets are decoded
+  useEffect(() => {
+    if (pendingStart && assetsReady) {
+      setPendingStart(false);
+      startGame();
+    }
+  }, [pendingStart, assetsReady, startGame]);
 
   /* -------- Pointer hit test (mouse + touch) -------- */
   const onFieldPointerDown = (ev) => {
@@ -286,17 +296,14 @@ export default function App() {
     const arr = stateRef.current.packets;
     for (let i = arr.length - 1; i >= 0; i--) {
       const p = arr[i];
-      const w = drawSize(p);     // <-- real clickable size
-      const h = w;
-      const px = p.valid && p.img ? p.x + (p.size - w) / 2 : p.x; // center logos
-      if (cx >= px && cx <= px + w && cy >= p.y && cy <= p.y + h) {
+      if (cx >= p.x && cx <= p.x + p.size && cy >= p.y && cy <= p.y + p.size) {
         if (p.valid) {
           scoreRef.current += SCORE_PER_HIT;
           setScore(s => s + SCORE_PER_HIT);
           arr.splice(i, 1);
           setPackets([...arr]);
         } else {
-          endGame("clicked_red");
+          endGame("clicked_red"); // end immediately on red click
         }
         return;
       }
@@ -306,21 +313,22 @@ export default function App() {
   /* ============================== UI ================================= */
   return (
     <div className="min-h-screen w-full flex flex-col items-center">
-      {/* Header */}
+      {/* Header (centered) */}
       <div ref={headerRef} className="w-full max-w-5xl mx-auto px-4 pt-6 text-center">
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight">
           <span className="bg-gradient-to-r from-rose-400 to-rose-300 bg-clip-text text-transparent">
             RedStone:
           </span>{" "}
-          <span className="text-white">Data Defender</span>
+          <span className="text-white">Data Defender</span>{" "}
         </h1>
+
         <p className="mt-2 text-sm sm:text-base text-zinc-300 max-w-2xl mx-auto">
-          Click valid packets <span className="font-semibold">(logos)</span>{" "}
-          avoid corrupted ones <span className="text-rose-400 font-semibold">🟥</span>.<br />Verify fast. Keep the stream clean.
+          Click valid packets <span className="font-semibold text-white">(logos)</span>, avoid corrupted ones{" "}
+          <span className="text-rose-400 font-semibold">🟥</span>.<br />Verify fast. Keep the stream clean.
         </p>
       </div>
 
-      {/* Play area */}
+      {/* Play area (fits first screen; everything visible) */}
       <div className="w-full max-w-3xl px-4 mt-3">
         <div
           ref={boardRef}
@@ -334,57 +342,44 @@ export default function App() {
               "radial-gradient(120% 120% at 50% 0%, rgba(244,63,94,0.06) 0%, rgba(255,255,255,0.04) 60%, rgba(0,0,0,0.15) 100%)",
           }}
         >
-          {/* inner frame */}
+          {/* Soft inner frame */}
           <div className="absolute inset-0 rounded-2xl pointer-events-none ring-1 ring-white/10" />
-          {/* Ground (red line) */}
+          {/* Ground */}
           <div className="absolute left-3 right-3 bottom-3 h-2 rounded-full bg-rose-500/70" />
 
           {/* Packets */}
-          {packets.map(p => {
-            if (p.valid && p.img) {
-              const w = drawSize(p);
-              const offsetX = p.x + (p.size - w) / 2;
-              return (
-                <img
-                  key={p.id}
-                  src={p.img}
-                  alt="valid-packet"
-                  className="absolute rounded-xl select-none"
-                  style={{
-                    width: w,
-                    height: w,
-                    objectFit: "contain",
-                    transform: `translate3d(${offsetX}px, ${p.y}px, 0)`,
-                    willChange: "transform",
-                    border: "2px solid rgba(255,255,255,0.7)",
-                    boxShadow:
-                      "0 10px 22px rgba(0,0,0,.35), 0 0 14px rgba(255,255,255,.35)",
-                    background:
-                      "radial-gradient(65% 65% at 50% 35%, rgba(255,255,255,.18) 0%, rgba(255,255,255,0) 60%)",
-                    borderRadius: "14px",
-                  }}
-                  draggable={false}
-                />
-              );
-            }
-            return (
+          {packets.map(p => (
+            p.valid ? (
               <div
                 key={p.id}
-                className="absolute rounded-xl"
+                className="absolute rounded-xl border border-amber-200/40 shadow-[0_8px_22px_rgba(0,0,0,0.38)]"
                 style={{
-                    width: p.size,
-                    height: p.size,
-                    transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
-                    willChange: "transform",
-                    background:
-                      "linear-gradient(145deg, rgba(244,63,94,0.98) 0%, rgba(225,29,72,0.98) 55%, rgba(190,18,60,0.96) 100%)",
-                    boxShadow:
-                      "inset 0 4px 8px rgba(255,255,255,.10), inset 0 -6px 10px rgba(0,0,0,.25), 0 10px 22px rgba(0,0,0,.35)",
-                    border: "1px solid rgba(255,255,255,.10)",
+                  width: p.size, height: p.size,
+                  transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
+                  background:
+                    "radial-gradient(circle at 35% 35%, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.12) 28%, rgba(255,255,255,0.06) 45%, rgba(0,0,0,0.15) 100%)",
+                }}
+              >
+                <img
+                  src={p.logoSrc}
+                  alt="packet"
+                  draggable={false}
+                  className="w-full h-full object-contain pointer-events-none"
+                />
+              </div>
+            ) : (
+              <div
+                key={p.id}
+                className="absolute rounded-xl border shadow-[0_6px_18px_rgba(0,0,0,0.35)] bg-rose-500/90 border-rose-200/50"
+                style={{
+                  width: p.size, height: p.size,
+                  transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
+                  backgroundImage:
+                    "linear-gradient(145deg, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0.1) 28%, rgba(255,255,255,0.06) 45%, rgba(0,0,0,0.12) 100%)",
                 }}
               />
-            );
-          })}
+            )
+          ))}
 
           {/* Name modal */}
           {view === "name" && (
@@ -416,11 +411,14 @@ export default function App() {
                   <Countdown />
                 </div>
                 <div className="mt-1 text-zinc-200 text-base sm:text-lg font-semibold">Get ready…</div>
+                {pendingStart && !assetsReady && (
+                  <div className="mt-2 text-zinc-400 text-sm">Loading textures…</div>
+                )}
               </div>
             </div>
           )}
 
-          {/* Game over */}
+          {/* Game over (manual leaderboard) */}
           {view === "gameover" && (
             <Modal>
               <div className="w-full max-w-sm">
@@ -431,7 +429,7 @@ export default function App() {
                 <div className="flex gap-3 justify-center">
                   <button
                     className="px-4 py-2 rounded-md bg-rose-500 hover:bg-rose-400 text-white font-semibold"
-                    onClick={() => { setView("countdown"); setTimeout(startGame, COUNTDOWN_MS); }}
+                    onClick={() => { setView("countdown"); setTimeout(() => setPendingStart(true), COUNTDOWN_MS); }}
                   >
                     Play again
                   </button>
@@ -446,7 +444,7 @@ export default function App() {
             </Modal>
           )}
 
-          {/* Leaderboard */}
+          {/* Leaderboard (open on demand) */}
           {view === "leaderboard" && (
             <Modal>
               <div className="w-full max-w-lg">
@@ -469,7 +467,7 @@ export default function App() {
                 <div className="mt-3">
                   <button
                     className="px-4 py-2 rounded-md bg-rose-500 hover:bg-rose-400 text-white font-semibold"
-                    onClick={() => { setView("countdown"); setTimeout(startGame, COUNTDOWN_MS); }}
+                    onClick={() => { setView("countdown"); setTimeout(() => setPendingStart(true), COUNTDOWN_MS); }}
                   >
                     Play again
                   </button>
@@ -479,14 +477,14 @@ export default function App() {
           )}
         </div>
 
-        {/* HUD */}
+        {/* HUD – kept visible on first screen */}
         <div ref={hudRef} className="mt-2 flex items-center justify-between">
           <div className="text-sm">Score: <b>{score}</b></div>
           <div className="text-sm text-zinc-300">Player: <span className="font-medium">{player || "—"}</span></div>
         </div>
       </div>
 
-      {/* How it works */}
+      {/* How it works – below the fold */}
       <section className="w-full max-w-5xl mx-auto px-4 mt-10 mb-20">
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 md:p-6">
           <h2 className="text-lg md:text-xl font-bold text-white text-center">
@@ -508,10 +506,13 @@ export default function App() {
 
             <ul className="space-y-2 leading-relaxed">
               <li>
+                <span className="font-semibold text-white">Pacing:</span> The stream speeds up over time, stay sharp!
+              </li>
+              <li>
                 <span className="font-semibold text-white">Leaderboard:</span> Global top 10 updates after each run.
               </li>
               <li>
-                <span className="font-semibold text-white">Tip:</span> Focus logos, ignore reds even if they reach the floor.
+                <span className="font-semibold text-white">Tip:</span> Focus on the logos, ignore reds even if they reach the floor.
               </li>
             </ul>
           </div>
