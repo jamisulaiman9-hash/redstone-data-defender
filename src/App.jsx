@@ -1,27 +1,40 @@
 // src/App.jsx
 import { useCallback, useEffect, useRef, useState } from "react";
 
+/* ======= Assets (green packet = logos) ======= */
+import Logo1   from "./assets/img/logo1.png";
+import Logo2   from "./assets/img/logo2.png";
+import Logo3   from "./assets/img/logo3.png";
+import Logo4   from "./assets/img/logo4.png";
+import Stoney1 from "./assets/img/stoney1.png";
+import Stoney2 from "./assets/img/stoney2.png";
+import Stoney3 from "./assets/img/stoney3.png";
+
 /* ============================== Config =============================== */
 // Flow
-const COUNTDOWN_MS        = 3_000;       // 3-2-1 overlay
+const COUNTDOWN_MS        = 3_000;
 
 // Gameplay (endless)
-const LANES               = 5;           // exactly five fixed lanes
+const LANES               = 5;
 const PKT_SIZE_DESKTOP    = 66;
 const PKT_SIZE_MOBILE     = 58;
 
-const VALID_CHANCE        = 0.40;        // 40% green, 60% red
-const SCORE_PER_HIT       = 10;          // +10 per verified green
-const SCORE_GREEN_MISS    = -5;          // -5 if a green touches the floor
+const VALID_CHANCE        = 0.40;  // 40% logos, 60% red
+const SCORE_PER_HIT       = 10;
+const SCORE_GREEN_MISS    = -5;
 
-// Difficulty ramp (speeds & spawn rate increase over time)
-const BASE_SPEED_PX_S     = 260;         // starting fall speed (px/sec)
-const SPEED_RAMP_PER_MIN  = 0.55;        // +55% speed every minute
-const SPAWN_BASE_MS       = 520;         // initial spawn interval
-const SPAWN_MIN_MS        = 120;         // minimum (fastest) spawn interval
-const SPAWN_ACCEL_PER_MIN = 300;         // reduce interval by this / minute
+// Difficulty ramp
+const BASE_SPEED_PX_S     = 260;
+const SPEED_RAMP_PER_MIN  = 0.55;
+const SPAWN_BASE_MS       = 520;
+const SPAWN_MIN_MS        = 120;
+const SPAWN_ACCEL_PER_MIN = 300;
 
-/* Backend URL that works on both phone & PC in the same LAN */
+/* Floor geometry (must match Tailwind classes on the red line) */
+const FLOOR_PAD_PX        = 12;   // bottom-3
+const FLOOR_HEIGHT_PX     = 8;    // h-2
+
+/* Backend URL */
 const HOST     = typeof window !== "undefined" ? window.location.hostname : "localhost";
 const BACKEND  = (import.meta.env.VITE_API || `http://${HOST}:8787`).replace(/\/+$/, "");
 
@@ -29,6 +42,20 @@ const BACKEND  = (import.meta.env.VITE_API || `http://${HOST}:8787`).replace(/\/
 const now   = () => performance.now();
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const isMob = () => window.innerWidth < 640;
+
+/* Green sprite set (logos) with per-sprite scale (Stoney slightly larger) */
+const GREEN_SPRITES = [
+  { src: Logo1,   scale: 1.00 },
+  { src: Logo2,   scale: 1.00 },
+  { src: Logo3,   scale: 1.00 },
+  { src: Logo4,   scale: 1.00 },
+  { src: Stoney1, scale: 1.22 },
+  { src: Stoney2, scale: 1.22 },
+  { src: Stoney3, scale: 1.22 },
+];
+
+/* Actual draw size of a packet (accounts for logo scale) */
+const drawSize = (p) => (p.valid && p.img ? p.size * (p.scale ?? 1) : p.size);
 
 /* ============================== App ================================= */
 export default function App() {
@@ -59,12 +86,8 @@ export default function App() {
     const vh = window.innerHeight || 800;
     const headerH = headerRef.current?.offsetHeight ?? 0;
     const hudH    = hudRef.current?.offsetHeight ?? 0;
-
-    // breathable margins around sections
-    const margins = 32 /* top */ + 20 /* between board & HUD */ + 16 /* bottom */;
+    const margins = 32 + 20 + 16;
     const available = vh - headerH - hudH - margins;
-
-    // clamp for small phones up to comfy desktops
     setBoardHeight(clamp(available, 360, 640));
   }, []);
 
@@ -126,22 +149,53 @@ export default function App() {
     return clamp(interval, SPAWN_MIN_MS, SPAWN_BASE_MS);
   }, []);
 
+  // Prevent stacking: require a minimum gap in the selected lane
+  const laneSafeToSpawn = useCallback((laneIdx) => {
+    const arr = stateRef.current.packets;
+    const SPAWN_Y = 10;
+    const MIN_GAP = pktSize * 1.25; // vertical safety
+    let nearestY = Infinity;
+
+    for (let i = 0; i < arr.length; i++) {
+      const p = arr[i];
+      if (p.lane !== laneIdx) continue;
+      if (p.y < nearestY) nearestY = p.y;
+    }
+    if (nearestY === Infinity) return true;
+    return nearestY >= (SPAWN_Y + pktSize + (MIN_GAP - pktSize));
+  }, [pktSize]);
+
   const spawnPacket = useCallback(() => {
     const { h, lanesX } = boardSize;
     if (lanesX.length === 0 || h <= 0) return;
 
-    const lane = Math.floor(Math.random() * lanesX.length);
-    const x = lanesX[lane];
-    const y = 10; // spawn inside container
+    const candidates = [];
+    for (let i = 0; i < lanesX.length; i++) {
+      if (laneSafeToSpawn(i)) candidates.push(i);
+    }
+    if (candidates.length === 0) return;
 
-    const vy = currentSpeed() / 60; // px / frame (~60fps)
+    const lane = candidates[Math.floor(Math.random() * candidates.length)];
+    const x = lanesX[lane];
+    const y = 10;
+
+    const isValid = Math.random() < VALID_CHANCE;
+    let img = null, scale = 1;
+    if (isValid) {
+      const pick = GREEN_SPRITES[Math.floor(Math.random() * GREEN_SPRITES.length)];
+      img = pick.src;
+      scale = pick.scale ?? 1;
+    }
 
     stateRef.current.packets.push({
       id: Math.random().toString(36).slice(2),
-      x, y, size: pktSize, vy,
-      valid: Math.random() < VALID_CHANCE, // green if true, red if false
+      lane,
+      x, y, size: pktSize,
+      valid: isValid,
+      img,
+      scale,
     });
-  }, [boardSize, pktSize, currentSpeed]);
+  }, [boardSize, pktSize, laneSafeToSpawn]);
 
   const endGame = useCallback(async (reason = "clicked_red") => {
     runningRef.current = false;
@@ -157,7 +211,7 @@ export default function App() {
       }
       await fetchBoard();
     } catch {}
-    setView("gameover");  // do not auto-open leaderboard
+    setView("gameover");
   }, [player, fetchBoard]);
 
   /* -------- Main loop (endless) -------- */
@@ -165,34 +219,39 @@ export default function App() {
     if (!runningRef.current) return;
     const t = now();
 
-    // dynamic spawn rate
+    // Spawn pacing
     const needInterval = currentSpawnInterval();
     if (t - lastSpawnRef.current >= needInterval) {
       spawnPacket();
       lastSpawnRef.current = t;
     }
 
-    // integrate
-    const floorY = boardSize.h - 8;
+    // Move all by the same step (no catching-up)
+    const step = currentSpeed() / 60;
+    const floorTop = boardSize.h - FLOOR_PAD_PX - FLOOR_HEIGHT_PX; // top edge of red bar
     const arr = stateRef.current.packets;
+
     for (let i = arr.length - 1; i >= 0; i--) {
       const p = arr[i];
-      p.y += p.vy;
+      const sizeH = drawSize(p);           // <-- real drawn height
+      const nextY = p.y + step;
+      const wouldBottom = nextY + sizeH;
 
-      if (p.y + p.size >= floorY) {
+      // Remove exactly when touching the top of the red line — no visual crossing
+      if (wouldBottom >= floorTop) {
         if (p.valid) {
-          // green missed — deduct points, continue
           scoreRef.current += SCORE_GREEN_MISS;
           setScore(s => s + SCORE_GREEN_MISS);
         }
-        // remove packet once it hits the floor (green OR red)
         arr.splice(i, 1);
+      } else {
+        p.y = nextY;
       }
     }
-    setPackets([...arr]);
 
+    setPackets([...arr]);
     rafRef.current = requestAnimationFrame(tick);
-  }, [boardSize.h, spawnPacket, currentSpawnInterval]);
+  }, [boardSize.h, currentSpeed, currentSpawnInterval, spawnPacket]);
 
   const startGame = useCallback(() => {
     resetRound();
@@ -200,10 +259,7 @@ export default function App() {
     lastSpawnRef.current = 0;
     runningRef.current = true;
     setView("game");
-
-    // seed a few packets so it starts active
     for (let i = 0; i < 4; i++) spawnPacket();
-
     rafRef.current = requestAnimationFrame(tick);
   }, [resetRound, spawnPacket, tick]);
 
@@ -230,14 +286,17 @@ export default function App() {
     const arr = stateRef.current.packets;
     for (let i = arr.length - 1; i >= 0; i--) {
       const p = arr[i];
-      if (cx >= p.x && cx <= p.x + p.size && cy >= p.y && cy <= p.y + p.size) {
+      const w = drawSize(p);     // <-- real clickable size
+      const h = w;
+      const px = p.valid && p.img ? p.x + (p.size - w) / 2 : p.x; // center logos
+      if (cx >= px && cx <= px + w && cy >= p.y && cy <= p.y + h) {
         if (p.valid) {
           scoreRef.current += SCORE_PER_HIT;
           setScore(s => s + SCORE_PER_HIT);
           arr.splice(i, 1);
           setPackets([...arr]);
         } else {
-          endGame("clicked_red"); // end immediately on red click
+          endGame("clicked_red");
         }
         return;
       }
@@ -247,22 +306,21 @@ export default function App() {
   /* ============================== UI ================================= */
   return (
     <div className="min-h-screen w-full flex flex-col items-center">
-      {/* Header (centered) */}
+      {/* Header */}
       <div ref={headerRef} className="w-full max-w-5xl mx-auto px-4 pt-6 text-center">
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight">
           <span className="bg-gradient-to-r from-rose-400 to-rose-300 bg-clip-text text-transparent">
             RedStone:
           </span>{" "}
-          <span className="text-white">Data Defender</span>{" "}
+          <span className="text-white">Data Defender</span>
         </h1>
-
         <p className="mt-2 text-sm sm:text-base text-zinc-300 max-w-2xl mx-auto">
-          Click valid packets <span className="text-green-400 font-semibold">🟩</span> avoid corrupted ones{" "}
-          <span className="text-rose-400 font-semibold">🟥</span>.<br />Verify fast. Keep the stream clean.
+          Click valid packets <span className="font-semibold">(logos)</span>{" "}
+          avoid corrupted ones <span className="text-rose-400 font-semibold">🟥</span>.<br />Verify fast. Keep the stream clean.
         </p>
       </div>
 
-      {/* Play area (fits first screen; everything visible) */}
+      {/* Play area */}
       <div className="w-full max-w-3xl px-4 mt-3">
         <div
           ref={boardRef}
@@ -276,26 +334,57 @@ export default function App() {
               "radial-gradient(120% 120% at 50% 0%, rgba(244,63,94,0.06) 0%, rgba(255,255,255,0.04) 60%, rgba(0,0,0,0.15) 100%)",
           }}
         >
-          {/* Soft inner frame */}
+          {/* inner frame */}
           <div className="absolute inset-0 rounded-2xl pointer-events-none ring-1 ring-white/10" />
-          {/* Ground */}
+          {/* Ground (red line) */}
           <div className="absolute left-3 right-3 bottom-3 h-2 rounded-full bg-rose-500/70" />
 
           {/* Packets */}
-          {packets.map(p => (
-            <div
-              key={p.id}
-              className={`absolute rounded-xl border shadow-[0_6px_18px_rgba(0,0,0,0.35)] ${
-                p.valid ? "bg-green-400/90 border-green-200/50"
-                        : "bg-rose-500/90 border-rose-200/50"
-              }`}
-              style={{
-                width: p.size, height: p.size,
-                transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
-                willChange: "transform",
-              }}
-            />
-          ))}
+          {packets.map(p => {
+            if (p.valid && p.img) {
+              const w = drawSize(p);
+              const offsetX = p.x + (p.size - w) / 2;
+              return (
+                <img
+                  key={p.id}
+                  src={p.img}
+                  alt="valid-packet"
+                  className="absolute rounded-xl select-none"
+                  style={{
+                    width: w,
+                    height: w,
+                    objectFit: "contain",
+                    transform: `translate3d(${offsetX}px, ${p.y}px, 0)`,
+                    willChange: "transform",
+                    border: "2px solid rgba(255,255,255,0.7)",
+                    boxShadow:
+                      "0 10px 22px rgba(0,0,0,.35), 0 0 14px rgba(255,255,255,.35)",
+                    background:
+                      "radial-gradient(65% 65% at 50% 35%, rgba(255,255,255,.18) 0%, rgba(255,255,255,0) 60%)",
+                    borderRadius: "14px",
+                  }}
+                  draggable={false}
+                />
+              );
+            }
+            return (
+              <div
+                key={p.id}
+                className="absolute rounded-xl"
+                style={{
+                    width: p.size,
+                    height: p.size,
+                    transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
+                    willChange: "transform",
+                    background:
+                      "linear-gradient(145deg, rgba(244,63,94,0.98) 0%, rgba(225,29,72,0.98) 55%, rgba(190,18,60,0.96) 100%)",
+                    boxShadow:
+                      "inset 0 4px 8px rgba(255,255,255,.10), inset 0 -6px 10px rgba(0,0,0,.25), 0 10px 22px rgba(0,0,0,.35)",
+                    border: "1px solid rgba(255,255,255,.10)",
+                }}
+              />
+            );
+          })}
 
           {/* Name modal */}
           {view === "name" && (
@@ -331,7 +420,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Game over (manual leaderboard) */}
+          {/* Game over */}
           {view === "gameover" && (
             <Modal>
               <div className="w-full max-w-sm">
@@ -357,7 +446,7 @@ export default function App() {
             </Modal>
           )}
 
-          {/* Leaderboard (open on demand) */}
+          {/* Leaderboard */}
           {view === "leaderboard" && (
             <Modal>
               <div className="w-full max-w-lg">
@@ -390,14 +479,14 @@ export default function App() {
           )}
         </div>
 
-        {/* HUD – kept visible on first screen */}
+        {/* HUD */}
         <div ref={hudRef} className="mt-2 flex items-center justify-between">
           <div className="text-sm">Score: <b>{score}</b></div>
           <div className="text-sm text-zinc-300">Player: <span className="font-medium">{player || "—"}</span></div>
         </div>
       </div>
 
-      {/* How it works – below the fold */}
+      {/* How it works */}
       <section className="w-full max-w-5xl mx-auto px-4 mt-10 mb-20">
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 md:p-6">
           <h2 className="text-lg md:text-xl font-bold text-white text-center">
@@ -410,10 +499,10 @@ export default function App() {
                 <span className="font-semibold text-white">Goal:</span> Defend data integrity like a RedStone gateway node.
               </li>
               <li>
-                <span className="font-semibold text-white">Packets:</span> Green = valid (click to verify). Red = corrupted (avoid).
+                <span className="font-semibold text-white">Packets:</span> Logos = valid (click to verify). Red squares = corrupted (avoid).
               </li>
               <li>
-                <span className="font-semibold text-white">Scoring:</span> +10 per green; missing a green is −5. Reds don’t matter unless you click them.
+                <span className="font-semibold text-white">Scoring:</span> +10 per logo; missing a logo is −5. Reds don’t matter unless you click them.
               </li>
             </ul>
 
@@ -422,7 +511,7 @@ export default function App() {
                 <span className="font-semibold text-white">Leaderboard:</span> Global top 10 updates after each run.
               </li>
               <li>
-                <span className="font-semibold text-white">Tip:</span> Focus greens, ignore reds even if they reach the floor.
+                <span className="font-semibold text-white">Tip:</span> Focus logos, ignore reds even if they reach the floor.
               </li>
             </ul>
           </div>
