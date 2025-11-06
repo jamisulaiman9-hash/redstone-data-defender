@@ -1,7 +1,17 @@
 // src/App.jsx
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/* ============================== Config =============================== */
+/* ============================== Brand Colors =============================== */
+// One place to change RedStone red everywhere:
+const RS_RED = "#B60D1D";           // <- put your exact brand hex here
+const RS_RED_LIGHT = "#E03544";     // lighter tint for shine
+const RS_RED_DARK  = "#8E0A15";     // darker shade for depth
+
+/* Build shiny red packet look with solid reds (no pink) */
+const RED_SHINE = `linear-gradient(180deg, ${RS_RED_LIGHT} 0%, ${RS_RED} 58%, ${RS_RED_DARK} 100%)`;
+const RED_GLOSS = `conic-gradient(from 210deg at 30% 25%, rgba(255,255,255,0.28) 0 35%, transparent 42% 100%)`;
+
+/* ============================== Config ==================================== */
 // Flow
 const COUNTDOWN_MS        = 3_000;       // 3-2-1 overlay
 
@@ -10,9 +20,9 @@ const LANES               = 5;           // exactly five fixed lanes
 const PKT_SIZE_DESKTOP    = 66;
 const PKT_SIZE_MOBILE     = 58;
 
-const VALID_CHANCE        = 0.40;        // 40% logos (valid), 60% red squares (invalid)
-const SCORE_PER_HIT       = 10;          // +10 per verified logo
-const SCORE_GREEN_MISS    = -5;          // -5 if a logo touches the floor
+const VALID_CHANCE        = 0.40;        // 40% logo (valid), 60% red (invalid)
+const SCORE_PER_HIT       = 10;          // +10 per verified valid logo
+const SCORE_GREEN_MISS    = -5;          // -5 if a valid packet touches the floor
 
 // Difficulty ramp (speeds & spawn rate increase over time)
 const BASE_SPEED_PX_S     = 260;         // starting fall speed (px/sec)
@@ -21,47 +31,32 @@ const SPAWN_BASE_MS       = 520;         // initial spawn interval
 const SPAWN_MIN_MS        = 120;         // minimum (fastest) spawn interval
 const SPAWN_ACCEL_PER_MIN = 300;         // reduce interval by this / minute
 
-// Prevent visible overlaps in the same lane (vertical spacing)
-const SAME_LANE_MIN_GAP   = 0.95;        // *pktSize* multiplier (0.95 == a hair of spacing)
-
 /* Backend URL that works on both phone & PC in the same LAN */
 const HOST     = typeof window !== "undefined" ? window.location.hostname : "localhost";
 const BACKEND  = (import.meta.env.VITE_API || `http://${HOST}:8787`).replace(/\/+$/, "");
 
-/* ============================== Assets (logos) =============================== */
-/** Collect the logo image URLs Vite will serve (you already placed them in /src/assets/img) */
-const LOGO_SRCS = Object.values(
-  import.meta.glob("./assets/img/logo*.png", { eager: true, as: "url" })
-);
-
-/** Decode logos before gameplay so they render with zero flicker */
-async function preloadLogos() {
-  await Promise.all(
-    LOGO_SRCS.map((src) => {
-      const img = new Image();
-      img.decoding = "async";
-      img.loading = "eager";
-      img.src = src;
-      return img.decode().catch(() => {});
-    })
-  );
-}
-
-/* ============================== Helpers ============================== */
+/* ============================== Helpers =================================== */
 const now   = () => performance.now();
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const isMob = () => window.innerWidth < 640;
 
-/* ============================== App ================================= */
+/* ======= Image sources (served from public/img for Vercel stability) ====== */
+const PRELOAD_SRC = [
+  "/img/logo1.png",
+  "/img/logo2.png",
+  "/img/logo3.png",
+  "/img/logo4.png",
+  "/img/stoney1.png",
+  "/img/stoney2.png",
+  "/img/stoney3.png",
+];
+
+/* ============================== App ======================================= */
 export default function App() {
   const [view, setView] = useState("name");   // name | countdown | game | gameover | leaderboard
   const [player, setPlayer] = useState("");
   const [score, setScore] = useState(0);
   const scoreRef = useRef(0);
-
-  // preload gate
-  const [assetsReady, setAssetsReady] = useState(false);
-  const [pendingStart, setPendingStart] = useState(false);
 
   /* -------- Leaderboard -------- */
   const [leaderboard, setLeaderboard] = useState([]);
@@ -85,7 +80,8 @@ export default function App() {
     const vh = window.innerHeight || 800;
     const headerH = headerRef.current?.offsetHeight ?? 0;
     const hudH    = hudRef.current?.offsetHeight ?? 0;
-    const margins = 32 /* top */ + 20 /* board↔HUD */ + 16 /* bottom */;
+
+    const margins = 32 /* top */ + 20 /* between board & HUD */ + 16 /* bottom */;
     const available = vh - headerH - hudH - margins;
     setBoardHeight(clamp(available, 360, 640));
   }, []);
@@ -95,6 +91,29 @@ export default function App() {
     window.addEventListener("resize", fitBoardToViewport, { passive: true });
     return () => window.removeEventListener("resize", fitBoardToViewport);
   }, [fitBoardToViewport]);
+
+  /* -------- Preload images to eliminate flicker -------- */
+  const [imagesReady, setImagesReady] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const imgs = PRELOAD_SRC.map((src) => {
+      const im = new Image();
+      im.decoding = "async";
+      im.loading = "eager";
+      im.src = src;
+      return im;
+    });
+    Promise.all(
+      imgs.map(
+        (im) =>
+          new Promise((res) => {
+            if (im.complete) res();
+            else im.onload = im.onerror = () => res();
+          })
+      )
+    ).then(() => alive && setImagesReady(true));
+    return () => { alive = false; };
+  }, []);
 
   /* -------- Board sizing & lanes -------- */
   const boardRef = useRef(null);
@@ -125,7 +144,7 @@ export default function App() {
 
   /* -------- Packets + loop state -------- */
   const [packets, setPackets] = useState([]);
-  const stateRef = useRef({ packets: [], startedAt: 0, lastLaneOf: {} }); // last y per lane (for gaps)
+  const stateRef = useRef({ packets: [], startedAt: 0 });
   const rafRef = useRef(0);
   const runningRef = useRef(false);
   const lastSpawnRef = useRef(0);
@@ -133,7 +152,6 @@ export default function App() {
   const resetRound = useCallback(() => {
     setScore(0); scoreRef.current = 0;
     stateRef.current.packets = [];
-    stateRef.current.lastLaneOf = {};
     setPackets([]);
   }, []);
 
@@ -149,42 +167,51 @@ export default function App() {
     return clamp(interval, SPAWN_MIN_MS, SPAWN_BASE_MS);
   }, []);
 
+  // keep a ring of recent lanes to reduce overlap visually
+  const recentLanesRef = useRef([]);
+  const pushRecentLane = (lane) => {
+    const arr = recentLanesRef.current;
+    arr.push(lane);
+    if (arr.length > 6) arr.shift();
+  };
+
   const spawnPacket = useCallback(() => {
     const { h, lanesX } = boardSize;
     if (lanesX.length === 0 || h <= 0) return;
 
-    // pick a lane; if the last packet in that lane is too close, retry a different lane once
+    // prefer lanes not used in the last few spawns (reduces stacking)
     let lane = Math.floor(Math.random() * lanesX.length);
-    const tryAlt = () => Math.floor(Math.random() * lanesX.length);
-
-    const minGap = pktSize * SAME_LANE_MIN_GAP;
-    const lastY = stateRef.current.lastLaneOf[lane];
-    if (lastY !== undefined && lastY < minGap * 1.1) {
-      const alt = tryAlt();
-      if (alt !== lane) lane = alt;
+    const recents = new Set(recentLanesRef.current.slice(-3));
+    for (let tries = 0; tries < 3; tries++) {
+      if (!recents.has(lane)) break;
+      lane = Math.floor(Math.random() * lanesX.length);
     }
-
     const x = lanesX[lane];
     const y = 10; // spawn inside container
-    const vy = currentSpeed() / 60; // px / frame (~60fps)
-
+    const vy = currentSpeed() / 60;
     const valid = Math.random() < VALID_CHANCE;
-    const logoSrc = valid ? LOGO_SRCS[Math.floor(Math.random() * LOGO_SRCS.length)] : null;
+
+    // Avoid spawning directly on another packet in same lane
+    const minGap = pktSize * 1.1;
+    for (const other of stateRef.current.packets) {
+      if (Math.abs(other.x - x) < 1) {
+        if (other.y < y + minGap && y < other.y + minGap) return;
+      }
+    }
 
     stateRef.current.packets.push({
       id: Math.random().toString(36).slice(2),
-      lane,
-      x, y, size: pktSize, vy, valid, logoSrc,
+      x, y, size: pktSize, vy,
+      valid,
+      img: valid ? PRELOAD_SRC[Math.floor(Math.random() * PRELOAD_SRC.length)] : null,
     });
 
-    // update "last in lane" to top of board (distance from previous spawn)
-    stateRef.current.lastLaneOf[lane] = 0;
+    pushRecentLane(lane);
   }, [boardSize, pktSize, currentSpeed]);
 
   const endGame = useCallback(async (reason = "clicked_red") => {
     runningRef.current = false;
     cancelAnimationFrame(rafRef.current);
-
     try {
       if (player.trim()) {
         await fetch(`${BACKEND}/scores`, {
@@ -195,7 +222,7 @@ export default function App() {
       }
       await fetchBoard();
     } catch {}
-    setView("gameover");  // do not auto-open leaderboard
+    setView("gameover");
   }, [player, fetchBoard]);
 
   /* -------- Main loop (endless) -------- */
@@ -210,59 +237,38 @@ export default function App() {
       lastSpawnRef.current = t;
     }
 
-    // integrate with strict floor clamp (no visual crossing)
-    const floorY = boardSize.h - 8;                 // visual red line top
-    const clampY = floorY - 1;                      // extra 1px safety
+    // integrate & enforce no-cross on red line
+    const floorY = boardSize.h - 8;          // top of red line
     const arr = stateRef.current.packets;
 
     for (let i = arr.length - 1; i >= 0; i--) {
       const p = arr[i];
+      p.y = Math.min(p.y + p.vy, floorY - p.size); // clamp so it never crosses
 
-      // advance
-      let nextY = p.y + p.vy;
-
-      // update lane gap tracker (distance since spawn)
-      stateRef.current.lastLaneOf[p.lane] = nextY;
-
-      // Hard stop at the floor so packets never render past the red bar
-      if (nextY + p.size >= clampY) {
-        p.y = clampY - p.size; // place exactly on top of the line
+      // remove as soon as it touches the line
+      if (p.y + p.size >= floorY) {
         if (p.valid) {
           scoreRef.current += SCORE_GREEN_MISS;
-          setScore(s => s + SCORE_GREEN_MISS);
+          setScore((s) => s + SCORE_GREEN_MISS);
         }
-        // remove packet immediately (won't be seen below the floor)
         arr.splice(i, 1);
-        continue;
       }
-
-      p.y = nextY;
     }
-
     setPackets([...arr]);
+
     rafRef.current = requestAnimationFrame(tick);
   }, [boardSize.h, spawnPacket, currentSpawnInterval]);
 
   const startGame = useCallback(() => {
     resetRound();
     stateRef.current.startedAt = now();
-    stateRef.current.lastLaneOf = {};
     lastSpawnRef.current = 0;
+    recentLanesRef.current = [];
     runningRef.current = true;
     setView("game");
-
-    // seed a few packets so it starts active
     for (let i = 0; i < 4; i++) spawnPacket();
-
     rafRef.current = requestAnimationFrame(tick);
   }, [resetRound, spawnPacket, tick]);
-
-  /* -------- Preload logos on mount -------- */
-  useEffect(() => {
-    let alive = true;
-    preloadLogos().then(() => alive && setAssetsReady(true));
-    return () => { alive = false; };
-  }, []);
 
   /* -------- Name flow -------- */
   const [nameInput, setNameInput] = useState("");
@@ -272,17 +278,8 @@ export default function App() {
     if (!n) return;
     setPlayer(n.slice(0, 20));
     setView("countdown");
-    // after the visual 3-2-1, mark that we're ready to start
-    setTimeout(() => setPendingStart(true), COUNTDOWN_MS);
+    setTimeout(startGame, COUNTDOWN_MS);
   };
-
-  // Start only when countdown finished AND assets are decoded
-  useEffect(() => {
-    if (pendingStart && assetsReady) {
-      setPendingStart(false);
-      startGame();
-    }
-  }, [pendingStart, assetsReady, startGame]);
 
   /* -------- Pointer hit test (mouse + touch) -------- */
   const onFieldPointerDown = (ev) => {
@@ -299,36 +296,44 @@ export default function App() {
       if (cx >= p.x && cx <= p.x + p.size && cy >= p.y && cy <= p.y + p.size) {
         if (p.valid) {
           scoreRef.current += SCORE_PER_HIT;
-          setScore(s => s + SCORE_PER_HIT);
+          setScore((s) => s + SCORE_PER_HIT);
           arr.splice(i, 1);
           setPackets([...arr]);
         } else {
-          endGame("clicked_red"); // end immediately on red click
+          endGame("clicked_red");
         }
         return;
       }
     }
   };
 
-  /* ============================== UI ================================= */
+  /* ============================== UI ====================================== */
   return (
     <div className="min-h-screen w-full flex flex-col items-center">
       {/* Header (centered) */}
       <div ref={headerRef} className="w-full max-w-5xl mx-auto px-4 pt-6 text-center">
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight">
-          <span className="bg-gradient-to-r from-rose-400 to-rose-300 bg-clip-text text-transparent">
-            RedStone:
-          </span>{" "}
-          <span className="text-white">Data Defender</span>{" "}
+          {/* Brand red on “RedStone:” */}
+          <span style={{ color: RS_RED }}>RedStone:</span>{" "}
+          <span className="text-white">Data Defender</span>
+          {" "}
+          <span
+          />
         </h1>
 
         <p className="mt-2 text-sm sm:text-base text-zinc-300 max-w-2xl mx-auto">
-          Click valid packets <span className="font-semibold text-white">(logos)</span>, avoid corrupted ones{" "}
-          <span className="text-rose-400 font-semibold">🟥</span>.<br />Verify fast. Keep the stream clean.
+          Click valid packets <span className="font-semibold text-white/90">(logos)</span>, avoid corrupted ones{" "}
+          {/* brand red square preview */}
+          <span
+            className="inline-block align-[-2px] mx-1 rounded-sm"
+            title="corrupted packet"
+            style={{ width: 14, height: 14, backgroundColor: RS_RED }}
+          />
+          .<br />Verify fast. Keep the stream clean.
         </p>
       </div>
 
-      {/* Play area (fits first screen; everything visible) */}
+      {/* Play area */}
       <div className="w-full max-w-3xl px-4 mt-3">
         <div
           ref={boardRef}
@@ -339,47 +344,50 @@ export default function App() {
             height: `${boardHeight}px`,
             overflow: "hidden",
             background:
-              "radial-gradient(120% 120% at 50% 0%, rgba(244,63,94,0.06) 0%, rgba(255,255,255,0.04) 60%, rgba(0,0,0,0.15) 100%)",
+              "radial-gradient(120% 120% at 50% 0%, rgba(182,13,29,0.08) 0%, rgba(255,255,255,0.04) 60%, rgba(0,0,0,0.15) 100%)",
           }}
         >
           {/* Soft inner frame */}
           <div className="absolute inset-0 rounded-2xl pointer-events-none ring-1 ring-white/10" />
-          {/* Ground */}
-          <div className="absolute left-3 right-3 bottom-3 h-2 rounded-full bg-rose-500/70" />
+
+          {/* Ground (top edge is the collision line) */}
+          <div
+            className="absolute left-3 right-3 bottom-3 h-2 rounded-full"
+            style={{ backgroundColor: RS_RED }}
+          />
 
           {/* Packets */}
-          {packets.map(p => (
-            p.valid ? (
-              <div
-                key={p.id}
-                className="absolute rounded-xl border border-amber-200/40 shadow-[0_8px_22px_rgba(0,0,0,0.38)]"
-                style={{
-                  width: p.size, height: p.size,
-                  transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
-                  background:
-                    "radial-gradient(circle at 35% 35%, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.12) 28%, rgba(255,255,255,0.06) 45%, rgba(0,0,0,0.15) 100%)",
-                }}
-              >
-                <img
-                  src={p.logoSrc}
-                  alt="packet"
-                  draggable={false}
-                  className="w-full h-full object-contain pointer-events-none"
+          {imagesReady &&
+            packets.map((p) =>
+              p.valid ? (
+                <div
+                  key={p.id}
+                  className="absolute rounded-xl border shadow-[0_10px_24px_rgba(0,0,0,0.35)]"
+                  style={{
+                    width: p.size,
+                    height: p.size,
+                    transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
+                    willChange: "transform",
+                    borderColor: "rgba(234,179,8,0.7)", // gold rim
+                    background: `url(${p.img}) center/contain no-repeat, radial-gradient(120% 120% at 10% 10%, rgba(255,255,255,0.22), transparent 40%)`,
+                  }}
                 />
-              </div>
-            ) : (
-              <div
-                key={p.id}
-                className="absolute rounded-xl border shadow-[0_6px_18px_rgba(0,0,0,0.35)] bg-rose-500/90 border-rose-200/50"
-                style={{
-                  width: p.size, height: p.size,
-                  transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
-                  backgroundImage:
-                    "linear-gradient(145deg, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0.1) 28%, rgba(255,255,255,0.06) 45%, rgba(0,0,0,0.12) 100%)",
-                }}
-              />
-            )
-          ))}
+              ) : (
+                <div
+                  key={p.id}
+                  className="absolute rounded-xl border shadow-[0_12px_24px_rgba(0,0,0,0.45)]"
+                  style={{
+                    width: p.size,
+                    height: p.size,
+                    transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
+                    willChange: "transform",
+                    borderColor: "rgba(255,255,255,0.35)",
+                    background: `${RED_SHINE}, ${RED_GLOSS}`,
+                    backgroundBlendMode: "screen, normal",
+                  }}
+                />
+              )
+            )}
 
           {/* Name modal */}
           {view === "name" && (
@@ -388,14 +396,19 @@ export default function App() {
                 <h2 className="text-lg font-semibold mb-3 text-center">Enter player name</h2>
                 <form onSubmit={onNameSubmit} className="space-y-3">
                   <input
-                    className="w-full px-3 py-2 rounded-md bg-zinc-800 border border-white/10 outline-none focus:ring-2 focus:ring-rose-400"
+                    className="w-full px-3 py-2 rounded-md bg-zinc-800 border border-white/10 outline-none focus:ring-2"
+                    style={{ boxShadow: `0 0 0 2px transparent`, outline: "none" }}
                     placeholder="e.g., Zilobyte"
                     value={nameInput}
                     onChange={(e) => setNameInput(e.target.value)}
                     maxLength={20}
                     autoFocus
                   />
-                  <button type="submit" className="w-full py-2 rounded-md bg-rose-500 hover:bg-rose-400 text-white font-semibold">
+                  <button
+                    type="submit"
+                    className="w-full py-2 rounded-md text-white font-semibold"
+                    style={{ backgroundColor: RS_RED }}
+                  >
                     Start
                   </button>
                 </form>
@@ -411,14 +424,11 @@ export default function App() {
                   <Countdown />
                 </div>
                 <div className="mt-1 text-zinc-200 text-base sm:text-lg font-semibold">Get ready…</div>
-                {pendingStart && !assetsReady && (
-                  <div className="mt-2 text-zinc-400 text-sm">Loading textures…</div>
-                )}
               </div>
             </div>
           )}
 
-          {/* Game over (manual leaderboard) */}
+          {/* Game over */}
           {view === "gameover" && (
             <Modal>
               <div className="w-full max-w-sm">
@@ -428,8 +438,9 @@ export default function App() {
                 </p>
                 <div className="flex gap-3 justify-center">
                   <button
-                    className="px-4 py-2 rounded-md bg-rose-500 hover:bg-rose-400 text-white font-semibold"
-                    onClick={() => { setView("countdown"); setTimeout(() => setPendingStart(true), COUNTDOWN_MS); }}
+                    className="px-4 py-2 rounded-md text-white font-semibold"
+                    style={{ backgroundColor: RS_RED }}
+                    onClick={() => { setView("countdown"); setTimeout(startGame, COUNTDOWN_MS); }}
                   >
                     Play again
                   </button>
@@ -444,7 +455,7 @@ export default function App() {
             </Modal>
           )}
 
-          {/* Leaderboard (open on demand) */}
+          {/* Leaderboard */}
           {view === "leaderboard" && (
             <Modal>
               <div className="w-full max-w-lg">
@@ -466,8 +477,9 @@ export default function App() {
                 </ol>
                 <div className="mt-3">
                   <button
-                    className="px-4 py-2 rounded-md bg-rose-500 hover:bg-rose-400 text-white font-semibold"
-                    onClick={() => { setView("countdown"); setTimeout(() => setPendingStart(true), COUNTDOWN_MS); }}
+                    className="px-4 py-2 rounded-md text-white font-semibold"
+                    style={{ backgroundColor: RS_RED }}
+                    onClick={() => { setView("countdown"); setTimeout(startGame, COUNTDOWN_MS); }}
                   >
                     Play again
                   </button>
@@ -477,7 +489,7 @@ export default function App() {
           )}
         </div>
 
-        {/* HUD – kept visible on first screen */}
+        {/* HUD */}
         <div ref={hudRef} className="mt-2 flex items-center justify-between">
           <div className="text-sm">Score: <b>{score}</b></div>
           <div className="text-sm text-zinc-300">Player: <span className="font-medium">{player || "—"}</span></div>
@@ -497,16 +509,16 @@ export default function App() {
                 <span className="font-semibold text-white">Goal:</span> Defend data integrity like a RedStone gateway node.
               </li>
               <li>
-                <span className="font-semibold text-white">Packets:</span> Logos = valid (click to verify). Red squares = corrupted (avoid).
+                <span className="font-semibold text-white">Packets:</span> Logos are valid (click to verify). Red squares are corrupted (avoid).
               </li>
               <li>
-                <span className="font-semibold text-white">Scoring:</span> +10 per logo; missing a logo is −5. Reds don’t matter unless you click them.
+                <span className="font-semibold text-white">Scoring:</span> +10 per verified logo; missing a logo is −5. Reds don’t matter unless you click them.
               </li>
             </ul>
 
             <ul className="space-y-2 leading-relaxed">
               <li>
-                <span className="font-semibold text-white">Pacing:</span> The stream speeds up over time, stay sharp!
+                <span className="font-semibold text-white">Pacing:</span> The stream speeds up continuously.
               </li>
               <li>
                 <span className="font-semibold text-white">Leaderboard:</span> Global top 10 updates after each run.
@@ -537,7 +549,7 @@ function Countdown() {
   const [v, setV] = useState(3);
   useEffect(() => {
     setV(3);
-    const id = setInterval(() => setV(n => (n > 1 ? n - 1 : 1)), 1000);
+    const id = setInterval(() => setV((n) => (n > 1 ? n - 1 : 1)), 1000);
     return () => clearInterval(id);
   }, []);
   return <span>{v}</span>;
