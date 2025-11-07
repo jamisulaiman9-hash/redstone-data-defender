@@ -8,6 +8,13 @@ const RS_RED_DARK  = "#8E0A15";
 const RED_SHINE = `linear-gradient(180deg, ${RS_RED_LIGHT} 0%, ${RS_RED} 58%, ${RS_RED_DARK} 100%)`;
 const RED_GLOSS = `conic-gradient(from 210deg at 30% 25%, rgba(255,255,255,0.28) 0 35%, transparent 42% 100%)`;
 
+/* Highlight palette for valid vs. Jalokim */
+const GOLD_BORDER = "rgba(250,204,21,0.95)";     // gold-400/500
+const GOLD_GLOW   = "rgba(250,204,21,0.40)";
+const GOLD_INNER  = "rgba(255,255,255,0.24)";
+const DULL_BORDER = "rgba(200,200,210,0.22)";    // cooler, thinner
+const DULL_GLOW   = "rgba(0,0,0,0.55)";
+
 /* ============================== Config ==================================== */
 // Flow
 const COUNTDOWN_MS        = 3_000;
@@ -38,7 +45,7 @@ const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const isMob = () => window.innerWidth < 640;
 
 /* ======= Valid logo images (served from public/img) ======= */
-const PRELOAD_SRC = [
+const VALID_LOGOS = [
   "/img/logo1.png",
   "/img/logo2.png",
   "/img/logo3.png",
@@ -48,13 +55,16 @@ const PRELOAD_SRC = [
   "/img/stoney3.png",
 ];
 
-/* ======= Corrupted packet color themes (blue, green, purple, black) ======= */
+/* ======= Corrupted packet types (blue, green, purple, JALOKIM image) ======= */
 const CORRUPT_THEMES = [
-  { name: "blue",   light: "#60A5FA", base: "#3B82F6", dark: "#1D4ED8" },
-  { name: "green",  light: "#34D399", base: "#22C55E", dark: "#15803D" },
-  { name: "purple", light: "#C084FC", base: "#A855F7", dark: "#6D28D9" },
-  { name: "black",  light: "#525252", base: "#27272A", dark: "#111827" },
+  { kind: "grad", name: "blue",   light: "#60A5FA", base: "#3B82F6", dark: "#1D4ED8" },
+  { kind: "grad", name: "green",  light: "#34D399", base: "#22C55E", dark: "#15803D" },
+  { kind: "grad", name: "purple", light: "#C084FC", base: "#A855F7", dark: "#6D28D9" },
+  { kind: "image", name: "jalokim", src: "/img/jalokim.png" },
 ];
+
+// Preload everything (valid logos + jalokim)
+const PRELOAD_ALL = [...VALID_LOGOS, "/img/jalokim.png"];
 
 function shinyGradient(theme) {
   return `linear-gradient(180deg, ${theme.light} 0%, ${theme.base} 58%, ${theme.dark} 100%)`;
@@ -103,11 +113,11 @@ export default function App() {
     return () => window.removeEventListener("resize", fitBoardToViewport);
   }, [fitBoardToViewport]);
 
-  /* -------- Preload images to eliminate flicker -------- */
+  /* -------- Preload images to eliminate flicker (incl. jalokim) -------- */
   const [imagesReady, setImagesReady] = useState(false);
   useEffect(() => {
     let alive = true;
-    const imgs = PRELOAD_SRC.map((src) => {
+    const imgs = PRELOAD_ALL.map((src) => {
       const im = new Image();
       im.decoding = "async";
       im.loading = "eager";
@@ -134,8 +144,7 @@ export default function App() {
   const computeLanes = useCallback((w) => {
     const PAD = 14;
     const usable = Math.max(1, w - PAD * 2 - pktSize);
-    const step = usable / (LANES - 1);
-    return Array.from({ length: LANES }, (_, i) => PAD + i * step);
+    return Array.from({ length: LANES }, (_, i) => PAD + i * (usable / (LANES - 1)));
   }, [pktSize]);
 
   const measureBoard = useCallback(() => {
@@ -178,7 +187,7 @@ export default function App() {
     return clamp(interval, SPAWN_MIN_MS, SPAWN_BASE_MS);
   }, []);
 
-  // keep a ring of recent lanes to reduce overlap visually
+  // ring buffer of recent lanes to reduce overlapping spawns
   const recentLanesRef = useRef([]);
   const pushRecentLane = (lane) => {
     const arr = recentLanesRef.current;
@@ -190,7 +199,7 @@ export default function App() {
     const { h, lanesX } = boardSize;
     if (lanesX.length === 0 || h <= 0) return;
 
-    // prefer lanes not used in the last few spawns (reduces stacking)
+    // prefer lanes not used recently
     let lane = Math.floor(Math.random() * lanesX.length);
     const recents = new Set(recentLanesRef.current.slice(-3));
     for (let tries = 0; tries < 3; tries++) {
@@ -202,7 +211,7 @@ export default function App() {
     const vy = currentSpeed() / 60;
     const valid = Math.random() < VALID_CHANCE;
 
-    // Avoid spawning directly on another packet in same lane
+    // avoid spawning directly on another packet in the same lane
     const minGap = pktSize * 1.1;
     for (const other of stateRef.current.packets) {
       if (Math.abs(other.x - x) < 1) {
@@ -216,20 +225,18 @@ export default function App() {
       id: Math.random().toString(36).slice(2),
       x, y, size: pktSize, vy,
       valid,
-      img: valid ? PRELOAD_SRC[Math.floor(Math.random() * PRELOAD_SRC.length)] : null,
-      theme, // only for corrupted
+      img: valid ? VALID_LOGOS[Math.floor(Math.random() * VALID_LOGOS.length)] : null,
+      theme, // for corrupted: gradient theme or jalokim image
     });
 
     pushRecentLane(lane);
   }, [boardSize, pktSize, currentSpeed]);
 
   const endGame = useCallback((reason = "clicked_red") => {
-    // stop the loop now (no network blocking)
     runningRef.current = false;
     cancelAnimationFrame(rafRef.current);
     setView("gameover");
 
-    // fire-and-forget network with short caps
     (async () => {
       try {
         const name = player.trim().slice(0, 20);
@@ -267,9 +274,8 @@ export default function App() {
 
     for (let i = arr.length - 1; i >= 0; i--) {
       const p = arr[i];
-      p.y = Math.min(p.y + p.vy, floorY - p.size); // never cross the red line
+      p.y = Math.min(p.y + p.vy, floorY - p.size); // never cross line
 
-      // remove as soon as it touches the line
       if (p.y + p.size >= floorY) {
         if (p.valid) {
           scoreRef.current += SCORE_GREEN_MISS;
@@ -344,16 +350,30 @@ export default function App() {
         <p className="mt-2 text-sm sm:text-base text-zinc-300 max-w-2xl mx-auto">
           Click valid packets <span className="font-semibold text-white/90">(logos)</span>, avoid corrupted ones;
           <br />
-          {/* legend chips for FOUR colors */}
-          {CORRUPT_THEMES.map((t) => (
-            <span
-              key={t.name}
-              className="inline-block align-[-2px] mx-1 rounded-sm"
-              title={`corrupted (${t.name})`}
-              style={{ width: 14, height: 14, background: shinyGradient(t) }}
-            />
-          ))}{" "}
-          .<br />Verify fast. Keep the stream clean.
+          {/* legend chips: blue, green, purple, jalokim */}
+          {CORRUPT_THEMES.map((t) =>
+            t.kind === "grad" ? (
+              <span
+                key={t.name}
+                className="inline-block align-[-2px] mx-1 rounded-sm"
+                title={`corrupted (${t.name})`}
+                style={{ width: 14, height: 14, background: shinyGradient(t) }}
+              />
+            ) : (
+              <span
+                key={t.name}
+                className="inline-block align-[-2px] mx-1 rounded-sm"
+                title="corrupted (Jalokim)"
+                style={{
+                  width: 14,
+                  height: 14,
+                  background: `url(${t.src}) center/cover no-repeat`,
+                  boxShadow: "0 0 0 1px rgba(255,255,255,0.25) inset",
+                }}
+              />
+            )
+          )}{" "}.
+          <br />Verify fast. Keep the stream clean.
         </p>
       </div>
 
@@ -384,19 +404,48 @@ export default function App() {
           {imagesReady &&
             packets.map((p) =>
               p.valid ? (
+                // VALID — brighter & shinier
                 <div
                   key={p.id}
-                  className="absolute rounded-xl border shadow-[0_10px_24px_rgba(0,0,0,0.35)]"
+                  className="absolute rounded-xl border"
                   style={{
                     width: p.size,
                     height: p.size,
                     transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
                     willChange: "transform",
-                    borderColor: "rgba(234,179,8,0.7)", // gold rim
-                    background: `url(${p.img}) center/contain no-repeat, radial-gradient(120% 120% at 10% 10%, rgba(255,255,255,0.22), transparent 40%)`,
+                    borderColor: GOLD_BORDER,
+                    borderWidth: 2,
+                    // soft outer gold glow + drop shadow for pop
+                    boxShadow: `0 0 0 2px ${GOLD_GLOW}, 0 10px 24px rgba(0,0,0,0.35)`,
+                    // image + subtle inner gloss
+                    background: `url(${p.img}) center/contain no-repeat,
+                                 radial-gradient(90% 90% at 15% 12%, ${GOLD_INNER}, transparent 40%),
+                                 radial-gradient(120% 120% at 10% 10%, rgba(255,255,255,0.18), transparent 45%)`,
+                    // tiny upscale to further distinguish from corrupted packets
+                    transformOrigin: "center",
+                  }}
+                />
+              ) : p.theme?.kind === "image" ? (
+                // CORRUPTED — Jalokim (duller)
+                <div
+                  key={p.id}
+                  className="absolute rounded-xl border"
+                  style={{
+                    width: p.size,
+                    height: p.size,
+                    transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
+                    willChange: "transform",
+                    borderColor: DULL_BORDER,
+                    borderWidth: 1,
+                    boxShadow: `0 10px 22px ${DULL_GLOW}`,
+                    background: `url(${p.theme.src}) center/contain no-repeat`,
+                    backgroundColor: "rgba(15,15,18,0.78)",   // darker plate
+                    // make it slightly less vivid than valid logos
+                    filter: "saturate(0.9) brightness(0.92) contrast(0.98)",
                   }}
                 />
               ) : (
+                // CORRUPTED — colored glossy squares (blue/green/purple)
                 <div
                   key={p.id}
                   className="absolute rounded-xl border shadow-[0_12px_24px_rgba(0,0,0,0.45)]"
@@ -405,7 +454,7 @@ export default function App() {
                     height: p.size,
                     transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
                     willChange: "transform",
-                    borderColor: "rgba(255,255,255,0.35)",
+                    borderColor: "rgba(255,255,255,0.32)",
                     background: `${shinyGradient(p.theme)} , ${glossLayer()}`,
                     backgroundBlendMode: "screen, normal",
                   }}
@@ -592,10 +641,10 @@ export default function App() {
                 <span className="font-semibold text-white">Goal:</span> Defend data integrity like a RedStone gateway node.
               </li>
               <li>
-                <span className="font-semibold text-white">Packets:</span> Logos are valid (click to verify). Corrupted squares appear in <b>blue, green, purple, or black</b>; avoid them.
+                <span className="font-semibold text-white">Packets:</span> Logos are valid (click to verify). Corrupted packets appear in <b>blue, green, purple</b>, or as the <b>Jalokim</b> icon; avoid them.
               </li>
               <li>
-                <span className="font-semibold text-white">Scoring:</span> +10 per verified logo; missing a logo is −5. Clicking a corrupted square ends the run.
+                <span className="font-semibold text-white">Scoring:</span> +10 per verified logo; missing a logo is −5. Clicking a corrupted packet ends the run.
               </li>
             </ul>
 
@@ -607,7 +656,7 @@ export default function App() {
                 <span className="font-semibold text-white">Leaderboard:</span> Global top 10 updates after each run.
               </li>
               <li>
-                <span className="font-semibold text-white">Tip:</span> Focus on the logos, ignore colored squares even if they reach the floor.
+                <span className="font-semibold text-white">Tip:</span> Focus on the logos, ignore corrupted packets even if they reach the floor.
               </li>
             </ul>
           </div>
