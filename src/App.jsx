@@ -336,7 +336,7 @@ export default function App() {
         </h1>
 
         <p className="mt-2 text-sm sm:text-base text-zinc-300 max-w-2xl mx-auto">
-          Click valid packets <span className="font-semibold text-white/90">(logos)</span>, avoid corrupted ones{" "}
+          Click valid packets <span className="font-semibold text-white/90">(logos)</span>, avoid corrupted ones;{" "}
           <br />{/* legend chips for FOUR colors */}
           <span
             className="inline-block align-[-2px] mx-1 rounded-sm"
@@ -484,38 +484,106 @@ export default function App() {
             </Modal>
           )}
 
-          {/* Leaderboard */}
-          {view === "leaderboard" && (
-            <Modal>
-              <div className="w-full max-w-lg">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-xl font-bold">Leaderboard</h2>
-                  <button className="text-zinc-400 hover:text-white" onClick={() => setView("name")}>✕</button>
-                </div>
-                <ol className="space-y-2 max-h-[50vh] overflow-auto pr-1">
-                  {leaderboard.length === 0 && <li className="text-zinc-400 text-sm">No scores yet.</li>}
-                  {leaderboard.slice(0, 10).map((r, i) => (
-                    <li key={`${r.name}-${r.ts ?? r.at ?? i}`} className="flex items-center justify-between bg-zinc-800/50 rounded-lg px-3 py-2">
-                      <div className="flex items-center gap-3">
-                        <span className="w-8 text-zinc-400">{String(i + 1).padStart(2, "0")}.</span>
-                        <span className="font-medium">{r.name}</span>
-                      </div>
-                      <span className="font-bold">{r.score}</span>
-                    </li>
-                  ))}
-                </ol>
-                <div className="mt-3">
-                  <button
-                    className="px-4 py-2 rounded-md text-white font-semibold"
-                    style={{ backgroundColor: RS_RED }}
-                    onClick={() => { setView("countdown"); setTimeout(startGame, COUNTDOWN_MS); }}
+       {/* Leaderboard — always fully visible inside the board */}
+{view === "leaderboard" && (
+  <div
+    className="absolute inset-0 rounded-2xl"
+    style={{
+      // use a grid to center, and lock overlay height to the board height
+      display: "grid",
+      placeItems: "center",
+      background: "rgba(0,0,0,0.55)",
+    }}
+  >
+    {(() => {
+      // vertical layout math (all values in px)
+      const PAD_V     = 10;   // card vertical padding
+      const HEADER_H  = 34;   // "Leaderboard" + close
+      const BTN_H     = 38;   // Play again button height
+      const GAP_ROW   = 6;    // gap between rows
+      const GAP_TOP   = 6;    // header -> rows gap
+      const GAP_BTN   = 10;   // rows -> button gap
+
+      // total vertical gaps aside from rows themselves
+      const staticUsed =
+        PAD_V * 2 + HEADER_H + GAP_TOP + GAP_BTN + BTN_H + GAP_ROW * (10 - 1);
+
+      // how much height is left for the 10 rows
+      const availForRows = Math.max(120, (boardHeight ?? 560) - staticUsed);
+
+      // compute per-row height so everything fits (clamped for readability)
+      const rowHeight = Math.max(24, Math.min(40, Math.floor(availForRows / 10)));
+
+      // Always show top 10 (pad if fewer)
+      const top10 = leaderboard && leaderboard.length ? leaderboard.slice(0, 10) : [];
+      while (top10.length < 10) top10.push({ name: "—", score: 0 });
+
+      return (
+        <div
+          className="rounded-xl bg-zinc-900/95 border border-white/10 shadow-[0_6px_28px_rgba(0,0,0,0.5)] w-[90%] max-w-[560px]"
+          style={{
+            // lock card height to fit entirely in the board
+            maxHeight: (boardHeight ?? 560) - 16,
+            padding: `${PAD_V}px 12px`,
+            fontSize: rowHeight <= 26 ? "0.82rem" : "0.9rem",
+          }}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between" style={{ height: HEADER_H, marginBottom: GAP_TOP }}>
+            <h2 className="text-white font-bold text-base sm:text-lg">Leaderboard</h2>
+            <button
+              className="text-zinc-400 hover:text-white text-sm"
+              onClick={() => setView("name")}
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Rows */}
+          <ol style={{ display: "grid", rowGap: GAP_ROW }}>
+            {top10.map((r, i) => (
+              <li
+                key={`${r.name}-${r.ts ?? r.at ?? i}`}
+                className="flex items-center justify-between bg-zinc-800/70 rounded-md px-2"
+                style={{ height: rowHeight }}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="w-6 text-zinc-400 font-mono text-[11px] sm:text-xs">
+                    {String(i + 1).padStart(2, "0")}.
+                  </span>
+                  <span
+                    className="font-medium text-white truncate"
+                    style={{ maxWidth: "min(46vw, 260px)" }}
+                    title={r.name}
                   >
-                    Play again
-                  </button>
+                    {r.name}
+                  </span>
                 </div>
-              </div>
-            </Modal>
-          )}
+                <span className="font-semibold text-white/90 tabular-nums text-sm">
+                  {r.score}
+                </span>
+              </li>
+            ))}
+          </ol>
+
+          {/* Play again */}
+          <div className="flex justify-center" style={{ marginTop: GAP_BTN, height: BTN_H }}>
+            <button
+              className="px-5 rounded-md text-white font-semibold text-sm"
+              style={{ backgroundColor: RS_RED, height: BTN_H - 6 }}
+              onClick={() => {
+                setView("countdown");
+                setTimeout(startGame, COUNTDOWN_MS);
+              }}
+            >
+              Play again
+            </button>
+          </div>
+        </div>
+      );
+    })()}
+  </div>
+)}
         </div>
 
         {/* HUD */}
