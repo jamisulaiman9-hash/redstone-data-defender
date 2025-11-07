@@ -337,7 +337,7 @@ export default function App() {
 
         <p className="mt-2 text-sm sm:text-base text-zinc-300 max-w-2xl mx-auto">
           Click valid packets <span className="font-semibold text-white/90">(logos)</span>, avoid corrupted ones{" "}
-          {/* legend chips for FOUR colors */}
+          <br />{/* legend chips for FOUR colors */}
           <span
             className="inline-block align-[-2px] mx-1 rounded-sm"
             title="corrupted (blue)"
