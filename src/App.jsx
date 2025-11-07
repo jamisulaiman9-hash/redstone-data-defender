@@ -3,11 +3,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 /* ============================== Brand Colors =============================== */
 // One place to change RedStone red everywhere:
-const RS_RED = "#B60D1D";           // <- put your exact brand hex here
-const RS_RED_LIGHT = "#E03544";     // lighter tint for shine
-const RS_RED_DARK  = "#8E0A15";     // darker shade for depth
+const RS_RED = "#B60D1D";           // <- your brand hex
+const RS_RED_LIGHT = "#E03544";
+const RS_RED_DARK  = "#8E0A15";
 
-/* Build shiny red packet look with solid reds (no pink) */
+/* build shiny look (used by legacy red preview in header if needed) */
 const RED_SHINE = `linear-gradient(180deg, ${RS_RED_LIGHT} 0%, ${RS_RED} 58%, ${RS_RED_DARK} 100%)`;
 const RED_GLOSS = `conic-gradient(from 210deg at 30% 25%, rgba(255,255,255,0.28) 0 35%, transparent 42% 100%)`;
 
@@ -20,11 +20,11 @@ const LANES               = 5;           // exactly five fixed lanes
 const PKT_SIZE_DESKTOP    = 66;
 const PKT_SIZE_MOBILE     = 58;
 
-const VALID_CHANCE        = 0.40;        // 40% logo (valid), 60% red (invalid)
+const VALID_CHANCE        = 0.40;        // 40% logo (valid), 60% corrupted (invalid)
 const SCORE_PER_HIT       = 10;          // +10 per verified valid logo
 const SCORE_GREEN_MISS    = -5;          // -5 if a valid packet touches the floor
 
-// Difficulty ramp (speeds & spawn rate increase over time)
+// Difficulty ramp
 const BASE_SPEED_PX_S     = 260;         // starting fall speed (px/sec)
 const SPEED_RAMP_PER_MIN  = 0.55;        // +55% speed every minute
 const SPAWN_BASE_MS       = 520;         // initial spawn interval
@@ -50,6 +50,22 @@ const PRELOAD_SRC = [
   "/img/stoney2.png",
   "/img/stoney3.png",
 ];
+
+/* ======= Color themes for CORRUPTED packets (now four colors) ======= */
+const CORRUPT_THEMES = [
+  { name: "blue",   light: "#60A5FA", base: "#3B82F6", dark: "#1D4ED8" },
+  { name: "green",  light: "#34D399", base: "#22C55E", dark: "#15803D" },
+  { name: "purple", light: "#C084FC", base: "#A855F7", dark: "#6D28D9" },
+  // brand red theme added
+  { name: "red",    light: RS_RED_LIGHT, base: RS_RED, dark: RS_RED_DARK },
+];
+
+function shinyGradient(theme) {
+  return `linear-gradient(180deg, ${theme.light} 0%, ${theme.base} 58%, ${theme.dark} 100%)`;
+}
+function glossLayer() {
+  return `conic-gradient(from 210deg at 30% 25%, rgba(255,255,255,0.28) 0 35%, transparent 42% 100%)`;
+}
 
 /* ============================== App ======================================= */
 export default function App() {
@@ -80,8 +96,7 @@ export default function App() {
     const vh = window.innerHeight || 800;
     const headerH = headerRef.current?.offsetHeight ?? 0;
     const hudH    = hudRef.current?.offsetHeight ?? 0;
-
-    const margins = 32 /* top */ + 20 /* between board & HUD */ + 16 /* bottom */;
+    const margins = 32 + 20 + 16;
     const available = vh - headerH - hudH - margins;
     setBoardHeight(clamp(available, 360, 640));
   }, []);
@@ -199,11 +214,14 @@ export default function App() {
       }
     }
 
+    const theme = valid ? null : CORRUPT_THEMES[Math.floor(Math.random() * CORRUPT_THEMES.length)];
+
     stateRef.current.packets.push({
       id: Math.random().toString(36).slice(2),
       x, y, size: pktSize, vy,
       valid,
       img: valid ? PRELOAD_SRC[Math.floor(Math.random() * PRELOAD_SRC.length)] : null,
+      theme, // only for corrupted
     });
 
     pushRecentLane(lane);
@@ -313,21 +331,32 @@ export default function App() {
       {/* Header (centered) */}
       <div ref={headerRef} className="w-full max-w-5xl mx-auto px-4 pt-6 text-center">
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight">
-          {/* Brand red on “RedStone:” */}
           <span style={{ color: RS_RED }}>RedStone:</span>{" "}
           <span className="text-white">Data Defender</span>
-          {" "}
-          <span
-          />
         </h1>
 
         <p className="mt-2 text-sm sm:text-base text-zinc-300 max-w-2xl mx-auto">
           Click valid packets <span className="font-semibold text-white/90">(logos)</span>, avoid corrupted ones{" "}
-          {/* brand red square preview */}
+          {/* legend chips for FOUR colors */}
           <span
             className="inline-block align-[-2px] mx-1 rounded-sm"
-            title="corrupted packet"
-            style={{ width: 14, height: 14, backgroundColor: RS_RED }}
+            title="corrupted (blue)"
+            style={{ width: 14, height: 14, background: shinyGradient(CORRUPT_THEMES[0]) }}
+          />
+          <span
+            className="inline-block align-[-2px] mx-1 rounded-sm"
+            title="corrupted (green)"
+            style={{ width: 14, height: 14, background: shinyGradient(CORRUPT_THEMES[1]) }}
+          />
+          <span
+            className="inline-block align-[-2px] mx-1 rounded-sm"
+            title="corrupted (purple)"
+            style={{ width: 14, height: 14, background: shinyGradient(CORRUPT_THEMES[2]) }}
+          />
+          <span
+            className="inline-block align-[-2px] mx-1 rounded-sm"
+            title="corrupted (red)"
+            style={{ width: 14, height: 14, background: shinyGradient(CORRUPT_THEMES[3]) }}
           />
           .<br />Verify fast. Keep the stream clean.
         </p>
@@ -382,7 +411,7 @@ export default function App() {
                     transform: `translate3d(${p.x}px, ${p.y}px, 0)`,
                     willChange: "transform",
                     borderColor: "rgba(255,255,255,0.35)",
-                    background: `${RED_SHINE}, ${RED_GLOSS}`,
+                    background: `${shinyGradient(p.theme)} , ${glossLayer()}`,
                     backgroundBlendMode: "screen, normal",
                   }}
                 />
@@ -509,10 +538,10 @@ export default function App() {
                 <span className="font-semibold text-white">Goal:</span> Defend data integrity like a RedStone gateway node.
               </li>
               <li>
-                <span className="font-semibold text-white">Packets:</span> Logos are valid (click to verify). Red squares are corrupted (avoid).
+                <span className="font-semibold text-white">Packets:</span> Logos are valid (click to verify). Corrupted squares appear in blue, green, purple, or red; avoid them.
               </li>
               <li>
-                <span className="font-semibold text-white">Scoring:</span> +10 per verified logo; missing a logo is −5. Reds don’t matter unless you click them.
+                <span className="font-semibold text-white">Scoring:</span> +10 per verified logo; missing a logo is −5. Clicking a corrupted square ends the run.
               </li>
             </ul>
 
@@ -524,7 +553,7 @@ export default function App() {
                 <span className="font-semibold text-white">Leaderboard:</span> Global top 10 updates after each run.
               </li>
               <li>
-                <span className="font-semibold text-white">Tip:</span> Focus on the logos, ignore reds even if they reach the floor.
+                <span className="font-semibold text-white">Tip:</span> Focus on the logos, ignore colored squares even if they reach the floor.
               </li>
             </ul>
           </div>
