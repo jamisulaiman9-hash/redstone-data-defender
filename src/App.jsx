@@ -2,36 +2,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /* ============================== Brand Colors =============================== */
-// One place to change RedStone red everywhere:
-const RS_RED = "#B60D1D";           // <- your brand hex
+// Brand red for UI elements (title, button, ground line)
+const RS_RED = "#B60D1D";
 const RS_RED_LIGHT = "#E03544";
 const RS_RED_DARK  = "#8E0A15";
 
-/* build shiny look (used by legacy red preview in header if needed) */
+/* Kept for shiny previews if needed elsewhere */
 const RED_SHINE = `linear-gradient(180deg, ${RS_RED_LIGHT} 0%, ${RS_RED} 58%, ${RS_RED_DARK} 100%)`;
 const RED_GLOSS = `conic-gradient(from 210deg at 30% 25%, rgba(255,255,255,0.28) 0 35%, transparent 42% 100%)`;
 
 /* ============================== Config ==================================== */
 // Flow
-const COUNTDOWN_MS        = 3_000;       // 3-2-1 overlay
+const COUNTDOWN_MS        = 3_000;
 
 // Gameplay (endless)
-const LANES               = 5;           // exactly five fixed lanes
+const LANES               = 5;
 const PKT_SIZE_DESKTOP    = 66;
 const PKT_SIZE_MOBILE     = 58;
 
-const VALID_CHANCE        = 0.40;        // 40% logo (valid), 60% corrupted (invalid)
-const SCORE_PER_HIT       = 10;          // +10 per verified valid logo
-const SCORE_GREEN_MISS    = -5;          // -5 if a valid packet touches the floor
+const VALID_CHANCE        = 0.40;        // 40% logos (valid), 60% corrupted (invalid)
+const SCORE_PER_HIT       = 10;
+const SCORE_GREEN_MISS    = -5;
 
 // Difficulty ramp
-const BASE_SPEED_PX_S     = 260;         // starting fall speed (px/sec)
-const SPEED_RAMP_PER_MIN  = 0.55;        // +55% speed every minute
-const SPAWN_BASE_MS       = 520;         // initial spawn interval
-const SPAWN_MIN_MS        = 120;         // minimum (fastest) spawn interval
-const SPAWN_ACCEL_PER_MIN = 300;         // reduce interval by this / minute
+const BASE_SPEED_PX_S     = 260;
+const SPEED_RAMP_PER_MIN  = 0.55;
+const SPAWN_BASE_MS       = 520;
+const SPAWN_MIN_MS        = 120;
+const SPAWN_ACCEL_PER_MIN = 300;
 
-/* Backend URL that works on both phone & PC in the same LAN */
+/* Backend URL */
 const HOST     = typeof window !== "undefined" ? window.location.hostname : "localhost";
 const BACKEND  = (import.meta.env.VITE_API || `http://${HOST}:8787`).replace(/\/+$/, "");
 
@@ -40,7 +40,7 @@ const now   = () => performance.now();
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const isMob = () => window.innerWidth < 640;
 
-/* ======= Image sources (served from public/img for Vercel stability) ====== */
+/* ======= Image sources (served from public/img) ====== */
 const PRELOAD_SRC = [
   "/img/logo1.png",
   "/img/logo2.png",
@@ -51,13 +51,11 @@ const PRELOAD_SRC = [
   "/img/stoney3.png",
 ];
 
-/* ======= Color themes for CORRUPTED packets (now four colors) ======= */
+/* ======= Corrupted packet color themes (NO RED) ======= */
 const CORRUPT_THEMES = [
   { name: "blue",   light: "#60A5FA", base: "#3B82F6", dark: "#1D4ED8" },
   { name: "green",  light: "#34D399", base: "#22C55E", dark: "#15803D" },
   { name: "purple", light: "#C084FC", base: "#A855F7", dark: "#6D28D9" },
-  // brand red theme added
-  { name: "red",    light: RS_RED_LIGHT, base: RS_RED, dark: RS_RED_DARK },
 ];
 
 function shinyGradient(theme) {
@@ -173,7 +171,7 @@ export default function App() {
   const currentSpeed = useCallback(() => {
     const minutes = Math.max(0, (now() - stateRef.current.startedAt) / 60_000);
     const mult = 1 + SPEED_RAMP_PER_MIN * minutes;
-    return BASE_SPEED_PX_S * mult; // px / s
+    return BASE_SPEED_PX_S * mult;
   }, []);
 
   const currentSpawnInterval = useCallback(() => {
@@ -182,7 +180,7 @@ export default function App() {
     return clamp(interval, SPAWN_MIN_MS, SPAWN_BASE_MS);
   }, []);
 
-  // keep a ring of recent lanes to reduce overlap visually
+  // reduce overlap: avoid same lanes too often
   const recentLanesRef = useRef([]);
   const pushRecentLane = (lane) => {
     const arr = recentLanesRef.current;
@@ -194,7 +192,7 @@ export default function App() {
     const { h, lanesX } = boardSize;
     if (lanesX.length === 0 || h <= 0) return;
 
-    // prefer lanes not used in the last few spawns (reduces stacking)
+    // prefer unused recent lanes
     let lane = Math.floor(Math.random() * lanesX.length);
     const recents = new Set(recentLanesRef.current.slice(-3));
     for (let tries = 0; tries < 3; tries++) {
@@ -202,11 +200,11 @@ export default function App() {
       lane = Math.floor(Math.random() * lanesX.length);
     }
     const x = lanesX[lane];
-    const y = 10; // spawn inside container
+    const y = 10;
     const vy = currentSpeed() / 60;
     const valid = Math.random() < VALID_CHANCE;
 
-    // Avoid spawning directly on another packet in same lane
+    // avoid spawning directly on another packet in same lane
     const minGap = pktSize * 1.1;
     for (const other of stateRef.current.packets) {
       if (Math.abs(other.x - x) < 1) {
@@ -221,49 +219,58 @@ export default function App() {
       x, y, size: pktSize, vy,
       valid,
       img: valid ? PRELOAD_SRC[Math.floor(Math.random() * PRELOAD_SRC.length)] : null,
-      theme, // only for corrupted
+      theme,
     });
 
     pushRecentLane(lane);
   }, [boardSize, pktSize, currentSpeed]);
 
-  const endGame = useCallback(async (reason = "clicked_red") => {
+  /* -------- End game: instant UI, background POST -------- */
+  const endGame = useCallback((reason = "clicked_red") => {
     runningRef.current = false;
     cancelAnimationFrame(rafRef.current);
-    try {
-      if (player.trim()) {
-        await fetch(`${BACKEND}/scores`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: player.trim().slice(0, 20), score: scoreRef.current, reason }),
-        });
-      }
-      await fetchBoard();
-    } catch {}
-    setView("gameover");
+    setView("gameover"); // show immediately
+
+    (async () => {
+      try {
+        const name = player.trim().slice(0, 20);
+        const payload = { name, score: scoreRef.current, reason };
+        const shortTimeout = (ms) => new Promise((r) => setTimeout(r, ms));
+
+        if (name && BACKEND) {
+          await Promise.race([
+            fetch(`${BACKEND}/scores`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            }),
+            shortTimeout(1200),
+          ]);
+        }
+        await Promise.race([fetchBoard(), shortTimeout(800)]);
+      } catch {}
+    })();
   }, [player, fetchBoard]);
 
-  /* -------- Main loop (endless) -------- */
+  /* -------- Main loop -------- */
   const tick = useCallback(() => {
     if (!runningRef.current) return;
     const t = now();
 
-    // dynamic spawn rate
     const needInterval = currentSpawnInterval();
     if (t - lastSpawnRef.current >= needInterval) {
       spawnPacket();
       lastSpawnRef.current = t;
     }
 
-    // integrate & enforce no-cross on red line
-    const floorY = boardSize.h - 8;          // top of red line
+    // integrate & clamp to line
+    const floorY = boardSize.h - 8; // top of red line
     const arr = stateRef.current.packets;
 
     for (let i = arr.length - 1; i >= 0; i--) {
       const p = arr[i];
-      p.y = Math.min(p.y + p.vy, floorY - p.size); // clamp so it never crosses
+      p.y = Math.min(p.y + p.vy, floorY - p.size);
 
-      // remove as soon as it touches the line
       if (p.y + p.size >= floorY) {
         if (p.valid) {
           scoreRef.current += SCORE_GREEN_MISS;
@@ -299,7 +306,7 @@ export default function App() {
     setTimeout(startGame, COUNTDOWN_MS);
   };
 
-  /* -------- Pointer hit test (mouse + touch) -------- */
+  /* -------- Pointer hit test -------- */
   const onFieldPointerDown = (ev) => {
     if (!runningRef.current) return;
     const rect = boardRef.current.getBoundingClientRect();
@@ -328,7 +335,7 @@ export default function App() {
   /* ============================== UI ====================================== */
   return (
     <div className="min-h-screen w-full flex flex-col items-center">
-      {/* Header (centered) */}
+      {/* Header */}
       <div ref={headerRef} className="w-full max-w-5xl mx-auto px-4 pt-6 text-center">
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight">
           <span style={{ color: RS_RED }}>RedStone:</span>{" "}
@@ -336,28 +343,17 @@ export default function App() {
         </h1>
 
         <p className="mt-2 text-sm sm:text-base text-zinc-300 max-w-2xl mx-auto">
-          Click valid packets <span className="font-semibold text-white/90">(logos)</span>, avoid corrupted ones;{" "}
-          <br />{/* legend chips for FOUR colors */}
-          <span
-            className="inline-block align-[-2px] mx-1 rounded-sm"
-            title="corrupted (blue)"
-            style={{ width: 14, height: 14, background: shinyGradient(CORRUPT_THEMES[0]) }}
-          />
-          <span
-            className="inline-block align-[-2px] mx-1 rounded-sm"
-            title="corrupted (green)"
-            style={{ width: 14, height: 14, background: shinyGradient(CORRUPT_THEMES[1]) }}
-          />
-          <span
-            className="inline-block align-[-2px] mx-1 rounded-sm"
-            title="corrupted (purple)"
-            style={{ width: 14, height: 14, background: shinyGradient(CORRUPT_THEMES[2]) }}
-          />
-          <span
-            className="inline-block align-[-2px] mx-1 rounded-sm"
-            title="corrupted (red)"
-            style={{ width: 14, height: 14, background: shinyGradient(CORRUPT_THEMES[3]) }}
-          />
+          Click valid packets <span className="font-semibold text-white/90">(logos)</span>, avoid corrupted ones;
+          <br />
+          {/* legend chips generated from CORRUPT_THEMES */}
+          {CORRUPT_THEMES.map((t) => (
+            <span
+              key={t.name}
+              className="inline-block align-[-2px] mx-1 rounded-sm"
+              title={`corrupted (${t.name})`}
+              style={{ width: 14, height: 14, background: shinyGradient(t) }}
+            />
+          ))}
           .<br />Verify fast. Keep the stream clean.
         </p>
       </div>
@@ -379,7 +375,7 @@ export default function App() {
           {/* Soft inner frame */}
           <div className="absolute inset-0 rounded-2xl pointer-events-none ring-1 ring-white/10" />
 
-          {/* Ground (top edge is the collision line) */}
+          {/* Ground (collision line) */}
           <div
             className="absolute left-3 right-3 bottom-3 h-2 rounded-full"
             style={{ backgroundColor: RS_RED }}
@@ -484,106 +480,87 @@ export default function App() {
             </Modal>
           )}
 
-       {/* Leaderboard — always fully visible inside the board */}
-{view === "leaderboard" && (
-  <div
-    className="absolute inset-0 rounded-2xl"
-    style={{
-      // use a grid to center, and lock overlay height to the board height
-      display: "grid",
-      placeItems: "center",
-      background: "rgba(0,0,0,0.55)",
-    }}
-  >
-    {(() => {
-      // vertical layout math (all values in px)
-      const PAD_V     = 10;   // card vertical padding
-      const HEADER_H  = 34;   // "Leaderboard" + close
-      const BTN_H     = 38;   // Play again button height
-      const GAP_ROW   = 6;    // gap between rows
-      const GAP_TOP   = 6;    // header -> rows gap
-      const GAP_BTN   = 10;   // rows -> button gap
-
-      // total vertical gaps aside from rows themselves
-      const staticUsed =
-        PAD_V * 2 + HEADER_H + GAP_TOP + GAP_BTN + BTN_H + GAP_ROW * (10 - 1);
-
-      // how much height is left for the 10 rows
-      const availForRows = Math.max(120, (boardHeight ?? 560) - staticUsed);
-
-      // compute per-row height so everything fits (clamped for readability)
-      const rowHeight = Math.max(24, Math.min(40, Math.floor(availForRows / 10)));
-
-      // Always show top 10 (pad if fewer)
-      const top10 = leaderboard && leaderboard.length ? leaderboard.slice(0, 10) : [];
-      while (top10.length < 10) top10.push({ name: "—", score: 0 });
-
-      return (
-        <div
-          className="rounded-xl bg-zinc-900/95 border border-white/10 shadow-[0_6px_28px_rgba(0,0,0,0.5)] w-[90%] max-w-[560px]"
-          style={{
-            // lock card height to fit entirely in the board
-            maxHeight: (boardHeight ?? 560) - 16,
-            padding: `${PAD_V}px 12px`,
-            fontSize: rowHeight <= 26 ? "0.82rem" : "0.9rem",
-          }}
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between" style={{ height: HEADER_H, marginBottom: GAP_TOP }}>
-            <h2 className="text-white font-bold text-base sm:text-lg">Leaderboard</h2>
-            <button
-              className="text-zinc-400 hover:text-white text-sm"
-              onClick={() => setView("name")}
+          {/* Leaderboard — fits fully inside the board */}
+          {view === "leaderboard" && (
+            <div
+              className="absolute inset-0 rounded-2xl"
+              style={{ display: "grid", placeItems: "center", background: "rgba(0,0,0,0.55)" }}
             >
-              ✕
-            </button>
-          </div>
+              {(() => {
+                const PAD_V     = 10;
+                const HEADER_H  = 34;
+                const BTN_H     = 38;
+                const GAP_ROW   = 6;
+                const GAP_TOP   = 6;
+                const GAP_BTN   = 10;
 
-          {/* Rows */}
-          <ol style={{ display: "grid", rowGap: GAP_ROW }}>
-            {top10.map((r, i) => (
-              <li
-                key={`${r.name}-${r.ts ?? r.at ?? i}`}
-                className="flex items-center justify-between bg-zinc-800/70 rounded-md px-2"
-                style={{ height: rowHeight }}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="w-6 text-zinc-400 font-mono text-[11px] sm:text-xs">
-                    {String(i + 1).padStart(2, "0")}.
-                  </span>
-                  <span
-                    className="font-medium text-white truncate"
-                    style={{ maxWidth: "min(46vw, 260px)" }}
-                    title={r.name}
+                const staticUsed =
+                  PAD_V * 2 + HEADER_H + GAP_TOP + GAP_BTN + BTN_H + GAP_ROW * (10 - 1);
+                const availForRows = Math.max(120, (boardHeight ?? 560) - staticUsed);
+                const rowHeight = Math.max(24, Math.min(40, Math.floor(availForRows / 10)));
+
+                const top10 = leaderboard && leaderboard.length ? leaderboard.slice(0, 10) : [];
+                while (top10.length < 10) top10.push({ name: "—", score: 0 });
+
+                return (
+                  <div
+                    className="rounded-xl bg-zinc-900/95 border border-white/10 shadow-[0_6px_28px_rgba(0,0,0,0.5)] w-[90%] max-w-[560px]"
+                    style={{
+                      maxHeight: (boardHeight ?? 560) - 16,
+                      padding: `${PAD_V}px 12px`,
+                      fontSize: rowHeight <= 26 ? "0.82rem" : "0.9rem",
+                    }}
                   >
-                    {r.name}
-                  </span>
-                </div>
-                <span className="font-semibold text-white/90 tabular-nums text-sm">
-                  {r.score}
-                </span>
-              </li>
-            ))}
-          </ol>
+                    <div className="flex items-center justify-between" style={{ height: HEADER_H, marginBottom: GAP_TOP }}>
+                      <h2 className="text-white font-bold text-base sm:text-lg">Leaderboard</h2>
+                      <button className="text-zinc-400 hover:text-white text-sm" onClick={() => setView("name")}>
+                        ✕
+                      </button>
+                    </div>
 
-          {/* Play again */}
-          <div className="flex justify-center" style={{ marginTop: GAP_BTN, height: BTN_H }}>
-            <button
-              className="px-5 rounded-md text-white font-semibold text-sm"
-              style={{ backgroundColor: RS_RED, height: BTN_H - 6 }}
-              onClick={() => {
-                setView("countdown");
-                setTimeout(startGame, COUNTDOWN_MS);
-              }}
-            >
-              Play again
-            </button>
-          </div>
-        </div>
-      );
-    })()}
-  </div>
-)}
+                    <ol style={{ display: "grid", rowGap: GAP_ROW }}>
+                      {top10.map((r, i) => (
+                        <li
+                          key={`${r.name}-${r.ts ?? r.at ?? i}`}
+                          className="flex items-center justify-between bg-zinc-800/70 rounded-md px-2"
+                          style={{ height: rowHeight }}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-6 text-zinc-400 font-mono text-[11px] sm:text-xs">
+                              {String(i + 1).padStart(2, "0")}.
+                            </span>
+                            <span
+                              className="font-medium text-white truncate"
+                              style={{ maxWidth: "min(46vw, 260px)" }}
+                              title={r.name}
+                            >
+                              {r.name}
+                            </span>
+                          </div>
+                          <span className="font-semibold text-white/90 tabular-nums text-sm">
+                            {r.score}
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
+
+                    <div className="flex justify-center" style={{ marginTop: GAP_BTN, height: BTN_H }}>
+                      <button
+                        className="px-5 rounded-md text-white font-semibold text-sm"
+                        style={{ backgroundColor: RS_RED, height: BTN_H - 6 }}
+                        onClick={() => {
+                          setView("countdown");
+                          setTimeout(startGame, COUNTDOWN_MS);
+                        }}
+                      >
+                        Play again
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
         </div>
 
         {/* HUD */}
@@ -606,7 +583,7 @@ export default function App() {
                 <span className="font-semibold text-white">Goal:</span> Defend data integrity like a RedStone gateway node.
               </li>
               <li>
-                <span className="font-semibold text-white">Packets:</span> Logos are valid (click to verify). Corrupted squares appear in blue, green, purple, or red; avoid them.
+                <span className="font-semibold text-white">Packets:</span> Logos are valid (click to verify). Corrupted squares appear in <b>blue, green, or purple</b>—avoid them.
               </li>
               <li>
                 <span className="font-semibold text-white">Scoring:</span> +10 per verified logo; missing a logo is −5. Clicking a corrupted square ends the run.
